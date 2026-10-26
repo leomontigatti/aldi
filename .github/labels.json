@@ -1,0 +1,97 @@
+{
+  "groups": {
+    "triage": [
+      {
+        "name": "needs-triage",
+        "color": "aaaaaa",
+        "description": "Maintainer needs to evaluate this issue"
+      },
+      {
+        "name": "ready-for-agent",
+        "color": "0e8a16",
+        "description": "Fully specified and grabbable; a triage state, not an AFK trigger"
+      },
+      {
+        "name": "ready-for-human",
+        "color": "fbca04",
+        "description": "Needs a human: a decision to settle or work an agent cannot do"
+      }
+    ],
+    "priority": [
+      {
+        "name": "priority:urgent",
+        "color": "b60205",
+        "description": "She cannot translate a document today, or a release broke her install"
+      },
+      {
+        "name": "priority:next",
+        "color": "d93f0b",
+        "description": "The short list to pull from next (keep to ~15)"
+      },
+      {
+        "name": "priority:later",
+        "color": "fbca04",
+        "description": "Worth doing, no blocker, not scheduled"
+      },
+      {
+        "name": "priority:parked",
+        "color": "c5def5",
+        "description": "Deliberately not now; the issue names its wake-up trigger"
+      }
+    ],
+    "type": [
+      {
+        "name": "bug",
+        "color": "d73a4a",
+        "description": "Something isn't working"
+      },
+      {
+        "name": "enhancement",
+        "color": "a2eeef",
+        "description": "New feature or request"
+      },
+      {
+        "name": "refactor",
+        "color": "5319e7",
+        "description": "Internal structure, no behaviour change"
+      },
+      {
+        "name": "chore",
+        "color": "bfd4f2",
+        "description": "Dependencies, tooling, CI, docs or operations"
+      },
+      {
+        "name": "question",
+        "color": "d876e3",
+        "description": "A decision to settle rather than work to do"
+      }
+    ],
+    "wayfinder": [
+      {
+        "name": "wayfinder:map",
+        "color": "5319e7",
+        "description": "Wayfinder map issue"
+      },
+      {
+        "name": "wayfinder:research",
+        "color": "0366d6",
+        "description": "Wayfinder research ticket"
+      },
+      {
+        "name": "wayfinder:prototype",
+        "color": "d4c5f9",
+        "description": "Wayfinder prototype ticket"
+      },
+      {
+        "name": "wayfinder:grilling",
+        "color": "fbca04",
+        "description": "Wayfinder human decision ticket"
+      },
+      {
+        "name": "wayfinder:task",
+        "color": "0e8a16",
+        "description": "Wayfinder prerequisite task ticket"
+      }
+    ]
+  }
+}

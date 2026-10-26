@@ -1,0 +1,26 @@
+{
+  "description": "The same project hooks as .claude/settings.json; the scripts live in .agents/hooks and read either harness's payload. The shared hooks are wired at user level by ~/.agents/workflow/install.sh.",
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Write|Edit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$(git rev-parse --show-toplevel)/.agents/hooks/format-edited-file.sh\""
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"$(git rev-parse --show-toplevel)/.agents/hooks/stop-lint-check.sh\""
+          }
+        ]
+      }
+    ]
+  }
+}

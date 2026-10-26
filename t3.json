@@ -1,0 +1,13 @@
+{
+  "$schema": "https://t3.codes/schema/t3.json",
+  "defaultThreadEnvMode": "worktree",
+  "scripts": [
+    {
+      "name": "Setup worktree",
+      "command": "root=\"$(cd \"${T3CODE_PROJECT_ROOT:?is not set}\" && pwd -P)\" || exit 1; if [ \"$(pwd -P)\" != \"$root\" ]; then for f in .env samples; do if [ -L \"$f\" ] || [ ! -e \"$f\" ]; then ln -sfn \"$root/$f\" \"$f\"; fi; done; fi; uv sync --locked",
+      "icon": "configure",
+      "runOnWorktreeCreate": true,
+      "async": false
+    }
+  ]
+}

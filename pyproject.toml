@@ -1,0 +1,42 @@
+[project]
+name = "aldi"
+version = "0.0.0"
+description = "Translate English or Portuguese PDFs to Spanish, keeping figures and, where it can, the layout"
+readme = "README.md"
+# pdf2zh-next supports up to 3.13; one version everywhere, the one `.python-version` names.
+requires-python = "==3.12.*"
+dependencies = []
+
+# `test` is all CI's Windows and macOS jobs install; `lint` runs on Linux only.
+[dependency-groups]
+test = [
+    "rust-just>=1.58",
+    "pytest>=9.0",
+]
+lint = [
+    "pre-commit>=4.6",
+    "ruff>=0.16",
+    "shellcheck-py>=0.11",
+    "actionlint-py>=1.7.12",
+    "zizmor>=1.30",
+]
+
+[build-system]
+requires = ["uv_build>=0.13,<0.14"]
+build-backend = "uv_build"
+
+[tool.uv]
+default-groups = ["test", "lint"]
+# Quarantine: skip artifacts uploaded in the last 3 days (supply-chain buffer, as in en-escena).
+exclude-newer = "3 days"
+
+[tool.ruff]
+line-length = 120
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "W", "C90", "F", "UP", "I", "B", "PTH"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = ["--strict-markers", "-q"]
