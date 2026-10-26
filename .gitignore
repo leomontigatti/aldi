@@ -1,0 +1,26 @@
+# secrets and local state
+.env
+*.env
+.env.*
+!.env.example
+*.key
+*.pem
+# her documents and what the app makes from them: never committed (docs/agents/workflows.md).
+# No trailing slash: in a worktree `samples` is a symlink, which a `samples/` pattern misses.
+/samples
+/jobs
+*.pdf
+*.docx
+# python
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.ruff_cache/
+dist/
+# editors
+.vscode/
+.idea/
+# implementer subagents' worktrees (Agent tool isolation, the implement-spec skill) and local Claude settings
+.claude/worktrees/
+.claude/settings.local.json

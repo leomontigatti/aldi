@@ -1,0 +1,48 @@
+# `uv run just lint` runs all of this on every file; `uv run just setup` installs it as a git hook.
+# Python tools run from uv.lock (repo: local) so there is one version source; only the generic
+# hooks below pin their own rev, by commit.
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: 3e8a8703264a2f4a69428a0aa4dcb512790b2c8c # v6.0.0
+    hooks:
+      - id: check-added-large-files
+      - id: check-executables-have-shebangs
+      - id: check-merge-conflict
+      - id: check-toml
+      - id: check-yaml
+      - id: detect-private-key
+      - id: end-of-file-fixer
+      - id: mixed-line-ending
+        args: [--fix=lf]
+      - id: trailing-whitespace
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: 83d9cd684c87d95d656c1458ef04895a7f1cbd8e # v8.30.1
+    hooks:
+      - id: gitleaks
+  - repo: local
+    hooks:
+      - id: ruff-check
+        name: ruff check
+        entry: uv run --locked ruff check --fix --exit-non-zero-on-fix
+        language: system
+        types_or: [python, pyi]
+      - id: ruff-format
+        name: ruff format
+        entry: uv run --locked ruff format
+        language: system
+        types_or: [python, pyi]
+      - id: shellcheck
+        name: shellcheck
+        entry: uv run --locked shellcheck -x
+        language: system
+        types: [shell]
+      - id: actionlint
+        name: actionlint
+        entry: uv run --locked actionlint
+        language: system
+        files: ^\.github/workflows/.*\.ya?ml$
+      - id: zizmor
+        name: zizmor (workflow security)
+        entry: uv run --locked zizmor --no-progress --offline
+        language: system
+        files: ^\.github/(workflows/.*\.ya?ml|dependabot\.ya?ml)$

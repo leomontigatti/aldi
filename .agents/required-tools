@@ -1,0 +1,3 @@
+# Tools a session here needs on PATH, beside the shared ones (git, gh, jq, python3).
+# The check-tool-path hook warns when one is missing; see docs/agents/agent-configuration.md.
+uv
