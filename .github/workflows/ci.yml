@@ -49,6 +49,9 @@ jobs:
     defaults:
       run:
         shell: bash
+    # `uv run` would otherwise sync the default groups, lint tools included, before every command.
+    env:
+      UV_NO_SYNC: "1"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -57,6 +60,6 @@ jobs:
         with:
           version: "0.13.0"
           enable-cache: false
-      - run: uv sync --locked
+      - run: uv sync --locked --no-default-groups --group test
       - name: Tests
         run: uv run --locked just test

@@ -2,6 +2,8 @@
 # docs/agents/validation.md for when to use which. Run through uv: `uv run just <recipe>`.
 
 set shell := ["bash", "-euo", "pipefail", "-c"]
+# Git for Windows' bash: a bare `bash` on Windows can resolve to the WSL launcher in System32.
+set windows-shell := ["C:/Program Files/Git/bin/bash.exe", "-euo", "pipefail", "-c"]
 
 # List recipes
 default:
@@ -11,16 +13,17 @@ default:
 setup:
     uv sync --locked
     uv run pre-commit install --install-hooks
-    [ -f .env ] || cp .env.example .env
-    mkdir -p samples
+    [ -e .env ] || [ -L .env ] || cp .env.example .env
+    [ -e samples ] || [ -L samples ] || mkdir samples
 
 # All linters and formatters on every file (fixes what it can; rerun to confirm)
 lint:
     uv run pre-commit run --all-files --show-diff-on-failure
 
 # The tests, or the named files and node ids. Never call Gemini.
+[positional-arguments]
 test *args:
-    uv run --locked pytest {{ args }}
+    uv run --locked pytest "$@"
 
 # Everything that must pass before a commit is done: lint, then tests. Failures only.
 gate:

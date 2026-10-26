@@ -36,7 +36,8 @@ The contract files this repo keeps: this file, [GLOSSARY.md](GLOSSARY.md), `t3.j
 - **Her documents** live only in the git-ignored `samples/`: copyrighted books and journal articles. Tests build
   their own small PDFs; nothing from `samples/`, nor an output made from it, is committed or quoted at length in an
   issue or PR.
-- **Gemini quota**: the tests never call Gemini (they use a fake at the translator seam). A run against a real
+- **Gemini quota**: the tests never call Gemini (they use a fake at the translator seam; the fake and the builders of test PDFs live in
+  `tests/conftest.py`). A run against a real
   document spends the free quota of the key in `.env`; run one only when the change needs it, on the fewest pages
   that prove it.
 - **Subagents**: each role's model, and how a session reaches it, is the shared `agents/models.md`; when to

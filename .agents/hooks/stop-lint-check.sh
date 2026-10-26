@@ -9,7 +9,7 @@
 # It does not run the tests: `uv run just gate` is the check before a
 # commit is done, and the agent runs it.
 #
-# It exits early on the two paths where it buys nothing:
+# It exits early on the three paths where it buys nothing:
 #
 # - `SKIP_STOP_CHECKS` set: the documented local bypass.
 # - `GITHUB_WORKFLOW` set: a workflow authors no code here, so the gate is a local-session concern.

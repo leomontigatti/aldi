@@ -9,7 +9,8 @@ A diff that touches any of these gets the full review (Standards, Spec and corre
 
 - **Her laptop**: the installer, the launcher and the update path. A broken one leaves her without the app and
   nobody beside her to fix it.
-- **The key**: where the Gemini key is read, stored and sent.
+- **The key and her documents**: where the Gemini key is read, stored and sent, and what keeps the key and
+  `samples/` out of git (`.gitignore`, the links `t3.json` makes).
 - **Dependency pins**: `pyproject.toml` and `uv.lock`, since a bump reaches her laptop with the next release.
 - **Her files**: anything that writes, moves or deletes files outside the app's own **Job** folders.
 
@@ -18,10 +19,9 @@ does not have yet; when a module lands under another name, update its line in th
 
 ```review-paths
 full laptop: ^(install\.(ps1|sh)|src/aldi/(install|update|launcher)|scripts/install)
-full key: ^src/aldi/(settings|config|keys?)\b
+full key: ^(\.gitignore|t3\.json|src/aldi/(settings|config|keys?|gemini)\b)
 full pins: ^(pyproject\.toml|uv\.lock)$
 quiet: ^\.pre-commit-config\.yaml$
-quiet: ^\.gitignore$
 quiet: ^\.github/dependabot\.yml$
 quiet: ^\.env\.example$
 ```
