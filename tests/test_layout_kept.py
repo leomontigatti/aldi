@@ -7,6 +7,7 @@ import time
 
 import psutil
 import pymupdf
+import pytest
 
 from aldi.estimate import estimate
 from aldi.gemini import MODEL_CHAIN, GeminiTranslator
@@ -17,6 +18,7 @@ from conftest import (
     build_born_digital_pdf,
     build_mixed_pdf,
     build_scanned_pdf,
+    busy_error,
     quota_error,
     refused,
     wait_until,
@@ -137,6 +139,26 @@ def test_mantener_el_diseno_keeps_to_flash_and_waits_out_its_minute_quota(start_
     assert clock.waits == [20]
     (text,) = page_texts(documents_dir / "Aldi" / "Esmalte" / "Esmalte (es, diseño).pdf")
     assert "ES: Page 1 describes the enamel" in text
+
+
+@pytest.mark.parametrize(("failure", "wait"), [(quota_error("38s"), 38), (busy_error(), 10)], ids=["429", "503"])
+def test_mantener_el_diseno_shows_the_quota_pause_while_it_waits_on_gemini(
+    start_app, clock, documents_dir, tmp_path, failure, wait
+):
+    # Bug: the wait for flash's quota or a busy flash went by silently, `Traduciendo…` for 40 minutes.
+    gemini = FakeGemini()
+    gemini.fail(FLASH, failure)
+    app = start_app(GeminiTranslator(gemini, sleep=clock.sleep, clock=clock.now))
+    clock.hold()
+    document = app.drop(three_pages(tmp_path))
+    started = app.send("POST", "/api/jobs", {"document": document["id"], "pages": "1", "output_mode": "layout"})
+
+    paused = app.wait_for(started["id"], until=lambda job: job["state"] == "paused", timeout=180)
+
+    assert paused["notice"] == "En pausa hasta que Gemini vuelva a estar disponible"
+    clock.release()
+    assert app.wait_for(started["id"], timeout=180)["state"] == "done"
+    assert clock.waits == [wait]
 
 
 def test_closing_the_app_while_mantener_el_diseno_lays_out_stops_it_at_once(start_app, translator, tmp_path):

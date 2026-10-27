@@ -1,6 +1,7 @@
 """The Job store: one folder per Job under the app's data directory, and the worker that runs them."""
 
 import json
+import logging
 import shutil
 import threading
 import traceback
@@ -33,6 +34,7 @@ QUOTA_PAUSE = 5 * 60
 OFFLINE_WAIT = 30
 
 _Answer = TypeVar("_Answer")
+_log = logging.getLogger(__name__)
 
 
 class Closing(Exception):
@@ -320,20 +322,16 @@ class JobStore:
 
     def _layout_kept(self, job_id: str, folder: Path, pages: Sequence[int]) -> Path:
         """The Layout-kept Translation's PDF. BabelDOC lays out every page before it asks Gemini anything, so the
-        progress moves only when it is done."""
+        progress moves only when it is done. Each prompt waits out a Quota Pause, a lost connection or a refused key
+        while BabelDOC waits for its answer."""
         self._update(job_id, state="running", pages=len(pages))
         (folder / "layout").mkdir(exist_ok=True)
+
+        def answer(prompt: str) -> str:
+            return self._ask(job_id, lambda: self._translator.answer_layout_prompt(prompt))
+
         try:
-            result = self._ask(
-                job_id,
-                lambda: write_layout_kept(
-                    folder / "source.pdf",
-                    pages,
-                    folder / "layout",
-                    self._translator.answer_layout_prompt,
-                    self._closing.is_set,
-                ),
-            )
+            result = write_layout_kept(folder / "source.pdf", pages, folder / "layout", answer, self._closing.is_set)
         except Cancelled as cancelled:
             raise Closing from cancelled
         self._update(job_id, page=len(pages))
@@ -393,16 +391,14 @@ class JobStore:
 
     def _ask(self, job_id: str, request: Callable[[], _Answer]) -> _Answer:
         """The request's answer, waiting out a Quota Pause, a lost connection or a refused key as often as it takes:
-        none is the page's fault, so none makes it a Failed Page.
-
-        The Job is running again from the moment the request is asked again: a Layout-kept run is one request, and
-        lays the pages out long before it answers."""
+        none is the page's fault, so none makes it a Failed Page. The Job is running again from the moment the
+        request is asked again."""
         while True:
             keys = self._keys
             try:
                 return request()
-            except QuotaExhausted:
-                self._wait(job_id, QUOTA_PAUSE_NOTICE, QUOTA_PAUSE)
+            except QuotaExhausted as exhausted:
+                self._wait(job_id, QUOTA_PAUSE_NOTICE, exhausted.retry_after or QUOTA_PAUSE)
             except Offline:
                 self._wait(job_id, OFFLINE_NOTICE, OFFLINE_WAIT)
             except KeyRefused:
@@ -410,6 +406,7 @@ class JobStore:
             self._update(job_id, state="running", notice="")
 
     def _wait(self, job_id: str, notice: str, seconds: float) -> None:
+        _log.info("Job %s paused %g s: %s", job_id, seconds, notice)
         self._update(job_id, state="paused", notice=notice)
         self._sleep(seconds)
         if self._closing.is_set():
@@ -417,6 +414,7 @@ class JobStore:
 
     def _wait_for_key(self, job_id: str, keys: int) -> None:
         """Asks Gemini nothing until she saves a key after the `keys`-th, the one it refused."""
+        _log.info("Job %s paused until a new key is saved", job_id)
         self._update(job_id, state="paused", notice=KEY_REFUSED_NOTICE)
         with self._key_saved:
             self._key_saved.wait_for(lambda: self._keys != keys or self._closing.is_set())

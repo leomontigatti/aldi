@@ -13,7 +13,7 @@ from google.genai import errors
 from aldi.gemini import MODEL_CHAIN, GeminiTranslator, make_client
 from aldi.jobs import JobStore
 from aldi.reports import Reporter
-from aldi.translator import Offline, QuotaExhausted
+from aldi.translator import KeyRefused, Offline, QuotaExhausted
 from conftest import (
     VALID_KEY,
     FakeGemini,
@@ -430,3 +430,34 @@ def test_a_page_translated_blank_every_time_becomes_a_failed_page(app, gemini, t
 
     assert job["state"] == "done"
     assert job["failed_pages"] == [1]
+
+
+def test_each_gemini_request_logs_its_model_outcome_and_wait_and_nothing_she_wrote(translator, gemini, caplog):
+    # Bug: nothing in the terminal said what Gemini was doing, so a stall could not be told from a wait.
+    gemini.fail(FLASH, busy_error(), quota_error("38s"))
+    gemini.fail(LITE, httpx.ReadTimeout("timed out"))
+    caplog.set_level("INFO", logger="aldi.gemini")
+
+    translator.translate_texts(["The enamel is hard."], {})
+    gemini.fail(LITE, offline_error())
+    with pytest.raises(Offline):
+        translator.translate_texts(["The dentin is softer."], {})
+
+    lines = [record.getMessage() for record in caplog.records if record.name == "aldi.gemini"]
+    assert lines == [
+        f"{FLASH}: 503, waiting 10 s",
+        f"{FLASH}: 429, its quota back in 38 s",
+        f"{LITE}: timed out, waiting 10 s",
+        f"{LITE}: answered",
+        f"{LITE}: offline",
+    ]
+
+
+def test_a_refused_key_is_logged_without_the_key(gemini, clock, caplog):
+    gemini.fail(FLASH, key_error(401))
+    caplog.set_level("INFO", logger="aldi.gemini")
+
+    with pytest.raises(KeyRefused):
+        GeminiTranslator(gemini, chain=(FLASH,), sleep=clock.sleep, clock=clock.now).translate_texts(["Hard."], {})
+
+    assert [record.getMessage() for record in caplog.records] == [f"{FLASH}: key refused"]

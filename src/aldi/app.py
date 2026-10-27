@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import logging
 import sys
 import threading
 import urllib.parse
@@ -296,6 +297,9 @@ def main(
 
         sys.exit(setup())
 
+    # What Gemini answers and every wait, in the terminal the app runs in: what a stall is diagnosed from.
+    logging.basicConfig(format="%(asctime)s %(name)s %(message)s", datefmt="%H:%M:%S")
+    logging.getLogger("aldi").setLevel(logging.INFO)
     from aldi.gemini import GeminiTranslator, make_client, validate_key
     from aldi.reports import GitHubClient
     from aldi.update import UvReinstaller, installed_from_release, latest_release

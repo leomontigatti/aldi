@@ -81,6 +81,11 @@ class Translator(Protocol):
 class QuotaExhausted(Exception):
     """No model in the Model Chain takes a request now: each is out of quota, or stays busy. A Quota Pause."""
 
+    def __init__(self, retry_after: float | None = None):
+        super().__init__()
+        self.retry_after = retry_after
+        """The seconds to wait before asking again, when Gemini says; the Quota Pause's own otherwise."""
+
 
 class Offline(Exception):
     """Gemini cannot be reached: no internet connection."""
