@@ -45,6 +45,10 @@ test-pdf path="jobs/prueba.pdf":
 gemini-measure *args:
     uv run --locked python scripts/measure_gemini.py "$@"
 
+# How Gemini answers for a key, as the Ajustes check asks (spends no quota): a made-up KEY, never hers
+check-key key:
+    uv run --locked python scripts/check_key.py {{ quote(key) }}
+
 # Peak memory of a test run (Linux): the named files or node ids; stops past ALDI_TEST_MEMORY_LIMIT_MB (4096)
 [positional-arguments]
 test-memory *args:
@@ -54,6 +58,11 @@ test-memory *args:
 [positional-arguments]
 side-by-side *args:
     uv run --locked python scripts/side_by_side.py "$@"
+
+# What the source reader makes of a PDF's pages (kinds, boxes, text, font sizes): PDF PAGES
+[positional-arguments]
+blocks *args:
+    uv run --locked python scripts/blocks.py "$@"
 
 # All linters and formatters on every file (fixes what it can; rerun to confirm)
 lint:

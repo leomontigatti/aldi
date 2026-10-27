@@ -60,7 +60,7 @@
     <li>Si te lo pide, acepta las condiciones de uso.</li>
     <li>Pulsa <strong>Create API key</strong> («Crear clave de API»). Si te pregunta por un proyecto, elige el que te ofrece.</li>
     <li>Cuando aparezca la clave (empieza con <code>AIza</code>), pulsa el botón de copiar.</li>
-    <li>Vuelve aquí, pégala abajo y pulsa <strong>Guardar clave</strong>.</li>
+    <li>Vuelve aquí, pégala abajo y pulsa <strong id="save-key-step">Guardar clave</strong>.</li>
   </ol>
   <p>Es gratis: no hace falta tarjeta ni suscripción.</p>
   <form id="key-form">
@@ -309,7 +309,9 @@ function show(screen, hasKey) {
   document.getElementById("key-intro").textContent = hasKey
     ? "Tu clave ya está guardada. Para cambiarla por otra, crea una nueva así:"
     : "Aldi traduce con Gemini, de Google. Para usarlo necesitas una clave gratuita, que se crea una sola vez:";
-  document.getElementById("save-key").textContent = hasKey ? "Cambiar clave" : "Guardar clave";
+  const saveLabel = hasKey ? "Cambiar clave" : "Guardar clave";
+  document.getElementById("save-key").textContent = saveLabel;
+  document.getElementById("save-key-step").textContent = saveLabel;
   keyInput.value = "";
   keyMessage.textContent = "";
   keyMessage.className = "";

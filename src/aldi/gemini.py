@@ -263,10 +263,12 @@ def validate_key(api_key: str) -> bool:
 
     Raises when Gemini cannot be reached or fails in another way, so that is not taken for a wrong key.
     """
-    try:
-        genai.Client(api_key=api_key).models.get(model=MODEL_CHAIN[0])
-    except errors.ClientError as error:
-        if error.code in (400, 401, 403):
-            return False
-        raise
+    # Held until the call returns: a client nobody holds closes its connection before the request is sent.
+    with make_client(api_key) as client:
+        try:
+            client.models.get(model=MODEL_CHAIN[0])
+        except errors.ClientError as error:
+            if error.code in (400, 401, 403):
+                return False
+            raise
     return True

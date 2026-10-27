@@ -1,10 +1,14 @@
 """First-run key setup and the settings that change the key later (#14)."""
 
+import json
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import pytest
 
+from aldi.gemini import validate_key
 from aldi.settings import Settings, default_config_dir
 from conftest import VALID_KEY, build_born_digital_pdf, refused
 
@@ -96,3 +100,65 @@ def test_a_key_that_cannot_be_checked_is_not_saved(app, key_check):
     assert code == 503
     assert "conexión" in message
     assert app.get("/api/settings") == {"has_key": False}
+
+
+# What Gemini answered on 2026-10-27 to a made-up key (`just check-key`).
+KEY_NOT_VALID = {
+    "error": {
+        "code": 400,
+        "message": "API key not valid. Please pass a valid API key.",
+        "status": "INVALID_ARGUMENT",
+        "details": [
+            {
+                "@type": "type.googleapis.com/google.rpc.ErrorInfo",
+                "reason": "API_KEY_INVALID",
+                "domain": "googleapis.com",
+                "metadata": {"service": "generativelanguage.googleapis.com"},
+            }
+        ],
+    }
+}
+
+
+@pytest.fixture
+def gemini_answering(monkeypatch):
+    """Gemini at a local address, answering every request with the status and body given."""
+    servers = []
+
+    def serve(status: int, body: dict) -> None:
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                data = json.dumps(body).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *args):
+                pass
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        servers.append(server)
+        monkeypatch.setenv("GOOGLE_GEMINI_BASE_URL", f"http://127.0.0.1:{server.server_address[1]}")
+        for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+            monkeypatch.delenv(name, raising=False)
+
+    yield serve
+    for server in servers:
+        server.shutdown()
+        server.server_close()
+
+
+def test_a_made_up_key_is_a_wrong_key_not_a_connection_problem(gemini_answering):
+    # Bug: the check's client was closed before it sent anything, so every key read as a connection problem.
+    gemini_answering(400, KEY_NOT_VALID)
+
+    assert validate_key("AIzaSyD-esta-clave-no-existe-00000000000") is False
+
+
+def test_a_key_gemini_takes_passes_the_check(gemini_answering):
+    gemini_answering(200, {"name": "models/gemini-3.5-flash"})
+
+    assert validate_key("AIza-de-prueba") is True
