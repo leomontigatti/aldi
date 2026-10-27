@@ -86,14 +86,16 @@ def create_server(
     report_interval: float = 300,
     host: str = "127.0.0.1",
     port: int = 0,
+    sleep: Callable[[float], None] | None = None,
 ) -> AldiServer:
     """The server, bound and ready for `serve_forever`; port 0 takes a free one.
 
     `make_translator` builds the translator for a key; `check_key` asks Gemini whether a key works; `make_github`
-    builds the client Error Reports are filed with, for the reporting token. `latest_release` asks GitHub for the
-    latest Release's tag and `reinstaller` installs it; without them, as in development, no update is offered.
-    Jobs left unfinished in `data_dir` by the last run start again, in the order they were dropped; queued Error
-    Reports are sent every `report_interval` seconds.
+    builds the client Error Reports are filed with, for the reporting token; `sleep` stands in for the Job store's
+    waits (a Quota Pause, no connection) in tests. `latest_release` asks GitHub for the latest Release's tag and
+    `reinstaller` installs it; without them, as in development, no update is offered. Jobs left unfinished in
+    `data_dir` by the last run start again, in the order they were dropped; queued Error Reports are sent every
+    `report_interval` seconds.
     """
     translator = _TranslatorForKey(settings, make_translator)
     reporter = Reporter(
@@ -103,7 +105,7 @@ def create_server(
         secrets=lambda: [settings.key, settings.report_token],
         interval=report_interval,
     )
-    jobs = JobStore(data_dir, documents_dir, translator, open_folder, reporter)
+    jobs = JobStore(data_dir, documents_dir, translator, open_folder, reporter, sleep)
     updates = Updates(data_dir, version or installed_version(), latest_release, reinstaller, reporter)
     return AldiServer((host, port), jobs, reporter, settings, check_key, updates)
 
@@ -224,6 +226,8 @@ def main(argv: list[str] | None = None, open_window: Callable[[str], None] | Non
 
         sys.exit(setup())
 
+    from google import genai
+
     from aldi.gemini import GeminiTranslator, validate_key
     from aldi.reports import GitHubClient
     from aldi.update import UvReinstaller, installed_from_release, latest_release
@@ -236,12 +240,16 @@ def main(argv: list[str] | None = None, open_window: Callable[[str], None] | Non
     parser.add_argument("--no-window", action="store_true", help="serve the app until Ctrl-C, without its window")
     args = parser.parse_args(argv)
     settings = Settings(args.config_dir, dev_env_file=Path(".env"))
+
+    def make_translator(key: str) -> GeminiTranslator:
+        return GeminiTranslator(genai.Client(api_key=key))
+
     release = installed_from_release()
     server = create_server(
         args.data_dir,
         args.documents_dir,
         settings,
-        GeminiTranslator,
+        make_translator,
         validate_key,
         GitHubClient,
         latest_release=latest_release if release else None,
