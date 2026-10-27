@@ -170,7 +170,7 @@ class GeminiTranslator:
                 self._layout_waits = 0
                 raise
             quota = self._out_of_quota_until.get(model, 0) - self._clock()
-            raise QuotaExhausted(quota if quota > 0 else BUSY_WAITS[waited]) from None
+            raise QuotaExhausted(retry_after=quota if quota > 0 else BUSY_WAITS[waited]) from None
         self._layout_waits = 0
         return answer
 
