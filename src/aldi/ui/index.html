@@ -19,7 +19,8 @@
   .state { color: #555; }
   .done .state { color: #2d7a3a; }
   .failed .state { color: #a33; }
-  .folder { font-size: .85rem; color: #666; word-break: break-all; }
+  .folder { font-size: .85rem; color: #666; word-break: break-all; margin: .3rem 0 .5rem; }
+  button.secondary { background: #fff; color: #2a6f97; padding: .3rem .8rem; }
 </style>
 </head>
 <body>
@@ -65,6 +66,16 @@ async function send(pdf) {
   refresh();
 }
 
+async function openFolder(id) {
+  message.textContent = "";
+  try {
+    const response = await fetch(`/api/jobs/${id}/open-folder`, { method: "POST" });
+    if (!response.ok) message.textContent = (await response.json()).error;
+  } catch {
+    message.textContent = "No se pudo abrir la carpeta.";
+  }
+}
+
 function describe(job) {
   if (job.state === "queued") return "En espera";
   if (job.state === "running") return job.pages ? `Traduciendo… Página ${job.page} de ${job.pages}` : "Traduciendo…";
@@ -89,7 +100,12 @@ async function refresh() {
         const folder = document.createElement("div");
         folder.className = "folder";
         folder.textContent = `${job.results.join(" y ")} en ${job.folder}`;
-        item.append(folder);
+        const open = document.createElement("button");
+        open.type = "button";
+        open.className = "secondary";
+        open.textContent = "Abrir carpeta";
+        open.addEventListener("click", () => openFolder(job.id));
+        item.append(folder, open);
       }
       return item;
     }));

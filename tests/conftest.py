@@ -41,11 +41,30 @@ def build_born_digital_pdf(path: Path, pages: Sequence[Sequence[str]]) -> Path:
 
 
 class RunningApp:
-    def __init__(self, base_url: str):
-        self.base_url = base_url
+    def __init__(self, server):
+        self.server = server
+        host, port = server.server_address[:2]
+        self.base_url = f"http://{host}:{port}"
+        self._thread = threading.Thread(target=server.serve_forever, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Closes the app the way she closes its window: the Job in hand stays on disk for the next start."""
+        self.server.shutdown()
+        self.server.server_close()
+        self._thread.join()
+
+    @property
+    def running(self) -> bool:
+        return self._thread.is_alive()
 
     def get(self, path: str):
         with urllib.request.urlopen(self.base_url + path) as response:
+            return json.load(response)
+
+    def post(self, path: str):
+        request = urllib.request.Request(self.base_url + path, data=b"", method="POST")
+        with urllib.request.urlopen(request) as response:
             return json.load(response)
 
     def upload(self, pdf: Path, filename: str | None = None):
@@ -57,6 +76,16 @@ class RunningApp:
         )
         with urllib.request.urlopen(request) as response:
             return json.load(response)
+
+    def wait_for_page(self, job_id: str, page: int, timeout: float = 60) -> dict:
+        """Waits until `page` pages of the Job are translated."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            job = self.get(f"/api/jobs/{job_id}")
+            if job["page"] >= page:
+                return job
+            time.sleep(0.05)
+        raise AssertionError(f"job {job_id} did not reach page {page}: {job}")
 
     def wait_for(self, job_id: str, timeout: float = 60) -> dict:
         deadline = time.monotonic() + timeout
@@ -79,13 +108,34 @@ def documents_dir(tmp_path):
 
 
 @pytest.fixture
-def app(tmp_path, translator, documents_dir):
-    server = create_server(
-        data_dir=tmp_path / "data", documents_dir=documents_dir, translator=translator, host="127.0.0.1", port=0
-    )
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    host, port = server.server_address[:2]
-    yield RunningApp(f"http://{host}:{port}")
-    server.shutdown()
-    server.server_close()
+def opened():
+    """The folders the app opened in her file browser."""
+    return []
+
+
+@pytest.fixture
+def start_app(tmp_path, documents_dir, opened):
+    """Starts the app on this test's data and Documents folders; each call is a fresh start of the same install."""
+    running = []
+
+    def start(translator, open_folder=opened.append) -> RunningApp:
+        server = create_server(
+            data_dir=tmp_path / "data",
+            documents_dir=documents_dir,
+            translator=translator,
+            open_folder=open_folder,
+            host="127.0.0.1",
+            port=0,
+        )
+        running.append(RunningApp(server))
+        return running[-1]
+
+    yield start
+    for app in running:
+        if app.running:
+            app.stop()
+
+
+@pytest.fixture
+def app(start_app, translator):
+    return start_app(translator)

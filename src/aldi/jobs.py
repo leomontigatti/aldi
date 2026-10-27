@@ -4,6 +4,7 @@ import json
 import threading
 import traceback
 import uuid
+from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -27,20 +28,40 @@ class Job:
     """The delivered files' names, inside `<Documents>/Aldi/<name>/`."""
     folder: str = ""
     """The results' folder, for the UI to show."""
+    number: int = 0
+    """The Job's place in the order she dropped them, from 1: the queue runs and lists Jobs in this order."""
 
 
 class JobStore:
-    def __init__(self, data_dir: Path, documents_dir: Path, translator: Translator):
+    """Every Job ever started; Jobs a closed app left unfinished run again, from their first page not yet done.
+
+    A page is done when its `pages/NNNN.json` exists: it holds the page's Spanish and the Term List after it.
+    """
+
+    def __init__(
+        self, data_dir: Path, documents_dir: Path, translator: Translator, open_folder: Callable[[Path], None]
+    ):
         self._jobs_dir = data_dir / "jobs"
         self._documents_dir = documents_dir
         self._translator = translator
+        self._open_folder = open_folder
         self._lock = threading.Lock()
+        self._closing = threading.Event()
         self._jobs: dict[str, Job] = {}
         # One Job at a time: they would otherwise compete for the same free quota.
         self._worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="aldi-job")
+        saved = [Job(**json.loads(path.read_text(encoding="utf-8"))) for path in self._jobs_dir.glob("*/job.json")]
+        for job in sorted(saved, key=lambda job: job.number):
+            self._jobs[job.id] = job
+            if job.state in ("queued", "running"):
+                self._update(job.id, state="queued")
+                self._worker.submit(self._run, job.id)
 
     def start(self, filename: str, pdf: bytes) -> Job:
-        job = Job(id=uuid.uuid4().hex[:12], name=document_name(filename))
+        with self._lock:
+            number = max((job.number for job in self._jobs.values()), default=0) + 1
+            job = Job(id=uuid.uuid4().hex[:12], name=document_name(filename), number=number)
+            self._jobs[job.id] = job
         folder = self._folder(job.id)
         (folder / "pages").mkdir(parents=True)
         (folder / "source.pdf").write_bytes(pdf)
@@ -58,7 +79,9 @@ class JobStore:
             return [Job(**asdict(job)) for job in self._jobs.values()]
 
     def close(self) -> None:
-        self._worker.shutdown(wait=False, cancel_futures=True)
+        """Stops after the page in hand; the Job resumes from the next page when the app starts again."""
+        self._closing.set()
+        self._worker.shutdown(wait=True, cancel_futures=True)
 
     def _run(self, job_id: str) -> None:
         folder = self._folder(job_id)
@@ -68,13 +91,20 @@ class JobStore:
             terms: dict[str, str] = {}
             translated = []
             for page in source:
-                answer = self._translator.translate_texts(page.texts, terms) if page.texts else None
-                texts = answer.texts if answer else []
-                terms = answer.terms if answer else terms
-                (folder / "pages" / f"{page.number:04d}.json").write_text(
-                    json.dumps({"source": page.texts, "spanish": texts}, ensure_ascii=False), encoding="utf-8"
-                )
-                translated.append(TranslatedPage(page.number, texts))
+                done = folder / "pages" / f"{page.number:04d}.json"
+                if not done.exists():
+                    if self._closing.is_set():
+                        return
+                    answer = self._translator.translate_texts(page.texts, terms) if page.texts else None
+                    saved = {
+                        "source": page.texts,
+                        "spanish": answer.texts if answer else [],
+                        "terms": answer.terms if answer else terms,
+                    }
+                    done.write_text(json.dumps(saved, ensure_ascii=False), encoding="utf-8")
+                saved = json.loads(done.read_text(encoding="utf-8"))
+                terms = saved["terms"]
+                translated.append(TranslatedPage(page.number, saved["spanish"]))
                 self._update(job_id, page=len(translated))
             name = self.get(job_id).name
             stem = f"{name} (es)"
@@ -84,6 +114,20 @@ class JobStore:
         except Exception:
             (folder / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
             self._update(job_id, state="failed")
+            return
+        try:
+            self._open_folder(delivered[0].parent)
+        except OSError:
+            # Her files are written and listed; a file browser that did not open is no reason to fail the Job.
+            (folder / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
+
+    def open_folder(self, job_id: str) -> bool:
+        """Shows a finished Job's results folder; False when there is no such folder yet."""
+        job = self.get(job_id)
+        if not job or not job.folder:
+            return False
+        self._open_folder(Path(job.folder))
+        return True
 
     def _update(self, job_id: str, **changes) -> None:
         with self._lock:

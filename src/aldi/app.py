@@ -3,6 +3,7 @@
 import argparse
 import json
 import urllib.parse
+from collections.abc import Callable
 from dataclasses import asdict
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -12,6 +13,7 @@ from pathlib import Path
 import platformdirs
 
 from aldi.jobs import JobStore
+from aldi.results import open_folder as open_in_file_browser
 from aldi.translator import Translator
 
 # Her largest book is 52 MB; anything far beyond that is not a document she would drop.
@@ -32,10 +34,18 @@ class AldiServer(ThreadingHTTPServer):
 
 
 def create_server(
-    data_dir: Path, documents_dir: Path, translator: Translator, host: str = "127.0.0.1", port: int = 0
+    data_dir: Path,
+    documents_dir: Path,
+    translator: Translator,
+    open_folder: Callable[[Path], None] = open_in_file_browser,
+    host: str = "127.0.0.1",
+    port: int = 0,
 ) -> AldiServer:
-    """The server, bound and ready for `serve_forever`; port 0 takes a free one."""
-    return AldiServer((host, port), JobStore(data_dir, documents_dir, translator))
+    """The server, bound and ready for `serve_forever`; port 0 takes a free one.
+
+    Jobs left unfinished in `data_dir` by the last run start again, in the order they were dropped.
+    """
+    return AldiServer((host, port), JobStore(data_dir, documents_dir, translator, open_folder))
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -55,7 +65,10 @@ class _Handler(BaseHTTPRequestHandler):
         self._json(HTTPStatus.NOT_FOUND, {"error": "No encontrado."})
 
     def do_POST(self):
-        if urllib.parse.urlsplit(self.path).path != "/api/jobs":
+        path = urllib.parse.urlsplit(self.path).path
+        if path.startswith("/api/jobs/") and path.endswith("/open-folder"):
+            return self._open_folder(path.removeprefix("/api/jobs/").removesuffix("/open-folder"))
+        if path != "/api/jobs":
             return self._json(HTTPStatus.NOT_FOUND, {"error": "No encontrado."})
         length = int(self.headers.get("Content-Length") or 0)
         if not 0 < length <= _MAX_UPLOAD:
@@ -66,6 +79,15 @@ class _Handler(BaseHTTPRequestHandler):
         filename = urllib.parse.unquote(self.headers.get("X-Filename") or "documento.pdf")
         job = self.server.jobs.start(filename, pdf)
         self._json(HTTPStatus.CREATED, asdict(job))
+
+    def _open_folder(self, job_id: str):
+        try:
+            opened = self.server.jobs.open_folder(job_id)
+        except OSError:
+            return self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "No se pudo abrir la carpeta."})
+        if not opened:
+            return self._json(HTTPStatus.NOT_FOUND, {"error": "No encontrado."})
+        self._json(HTTPStatus.OK, {})
 
     def _json(self, status: HTTPStatus, body: dict):
         self._send(status, json.dumps(body, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
