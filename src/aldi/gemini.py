@@ -2,16 +2,21 @@
 
 import json
 import os
-from collections.abc import Mapping, Sequence
+import time
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
 
+import httpx
 from google import genai
-from google.genai import types
+from google.genai import errors, types
 from pydantic import BaseModel
 
-from aldi.translator import TextTranslation
+from aldi.translator import Offline, QuotaExhausted, TextTranslation
 
-MODEL = "gemini-3.5-flash"
+# Each model has its own free quota on the same key (ADR 1); a Job moves down when one runs out.
+MODEL_CHAIN = ("gemini-3.5-flash", "gemini-3.5-flash-lite", "gemma-4-31b-it")
+# Seconds to wait before asking a busy (503) model again; after the last, the request goes to the next model.
+BUSY_WAITS = (10, 30, 90)
 
 _TEXT_INSTRUCTION = """\
 You translate a dentistry textbook or journal article from English or Portuguese into Spanish for a dentistry \
@@ -40,13 +45,18 @@ class TranslationError(RuntimeError):
 
 
 class GeminiTranslator:
-    def __init__(self, api_key: str):
-        self._client = genai.Client(api_key=api_key)
+    def __init__(
+        self, client: genai.Client, chain: Sequence[str] = MODEL_CHAIN, sleep: Callable[[float], None] = time.sleep
+    ):
+        self._client = client
+        self._chain = tuple(chain)
+        self._sleep = sleep
+        # The models that answered 429, skipped until every model has: then the Job pauses and starts over.
+        self._out_of_quota: set[str] = set()
 
     def translate_texts(self, texts: Sequence[str], terms: Mapping[str, str]) -> TextTranslation:
         request = json.dumps({"blocks": list(texts), "terms": dict(terms)}, ensure_ascii=False)
-        response = self._client.models.generate_content(
-            model=MODEL,
+        response = self._generate(
             contents=request,
             config=types.GenerateContentConfig(
                 system_instruction=_TEXT_INSTRUCTION,
@@ -61,6 +71,27 @@ class GeminiTranslator:
         return TextTranslation(
             texts=answer.spanish, terms={**terms, **{term.original: term.spanish for term in answer.terms}}
         )
+
+    def _generate(self, **request) -> types.GenerateContentResponse:
+        for model in self._chain:
+            if model in self._out_of_quota:
+                continue
+            for wait in (*BUSY_WAITS, None):
+                try:
+                    return self._client.models.generate_content(model=model, **request)
+                except errors.APIError as error:
+                    if error.code == 503 and wait is not None:
+                        self._sleep(wait)
+                        continue
+                    if error.code == 429:
+                        self._out_of_quota.add(model)
+                    elif error.code != 503:
+                        raise
+                    break
+                except (httpx.ConnectError, httpx.ConnectTimeout) as error:
+                    raise Offline from error
+        self._out_of_quota.clear()
+        raise QuotaExhausted
 
 
 def read_key(env_file: Path = Path(".env")) -> str:
