@@ -19,8 +19,8 @@ PAGE_BATCH = 4
 _MIN_SIDE = 5
 # An escape, or an emphasis mark, in a block's inline Markdown.
 _MARK = re.compile(r"\\(.)|\*")
-# A literal `*` on either side of some text, as Gemini writes the emphasis it adds.
-_STAR_PAIR = re.compile(r"(?<!\\)\\\*(?=\S)(.+?)(?<=\S)\\\*")
+# A literal `*` on either side of some text with no other between them, as Gemini writes the emphasis it adds.
+_STAR_PAIR = re.compile(r"(?<!\\)\\\*(?=\S)((?:(?!\\\*).)+?)(?<=\S)\\\*")
 
 
 class UnusableAnswer(ValueError):

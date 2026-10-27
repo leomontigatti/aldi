@@ -204,6 +204,40 @@ def test_a_mantener_el_diseno_job_paused_on_flash_lets_a_reading_version_run_fir
     assert (documents_dir / "Aldi" / "Esmalte" / "Esmalte (es, diseño).pdf").exists()
 
 
+def test_a_mantener_el_diseno_job_waits_for_the_paused_one_while_a_reading_version_runs(
+    app, translator, clock, tmp_path
+):
+    # Bug: a paused Job gave its turn to any Job, so a second Mantener el diseño started BabelDOC beside the paused
+    # one's (about 2 GB each) only to meet the same exhausted flash quota.
+    answer = translator.answer_layout_prompt
+    failures = [QuotaExhausted()]
+
+    def out_of_quota_once(prompt, waited=0):
+        if failures:
+            raise failures.pop()
+        return answer(prompt)
+
+    translator.answer_layout_prompt = out_of_quota_once
+    clock.hold()
+    first = app.drop(three_pages(tmp_path))
+    first = app.send("POST", "/api/jobs", {"document": first["id"], "pages": "1", "output_mode": "layout"})
+    app.wait_for(first["id"], until=lambda job: job["state"] == "paused", timeout=180)
+    pages = [["The dentin lies under the enamel of the molar."]]
+    second = app.drop(build_born_digital_pdf(tmp_path / "Dentina.pdf", pages))
+    second = app.send("POST", "/api/jobs", {"document": second["id"], "pages": "1", "output_mode": "layout"})
+    reading = app.upload(build_born_digital_pdf(tmp_path / "Pulpa.pdf", [["The pulp is soft."]]))
+
+    assert app.wait_for(reading["id"])["state"] == "done"
+    assert app.get(f"/api/jobs/{second['id']}")["state"] == "queued"
+    assert not any("dentin" in prompt for prompt in translator.layout_prompts)
+    clock.release()
+    assert app.wait_for(first["id"], timeout=180)["state"] == "done"
+    assert app.wait_for(second["id"], timeout=180)["state"] == "done"
+    dentin = [index for index, prompt in enumerate(translator.layout_prompts) if "dentin" in prompt]
+    enamel = [index for index, prompt in enumerate(translator.layout_prompts) if "enamel of the first" in prompt]
+    assert dentin and enamel and max(enamel) < min(dentin)
+
+
 def test_each_mantener_el_diseno_job_counts_its_own_waits_on_flash(start_app, clock, tmp_path):
     # Bug: the count of waits in a row lived in the translator, so a Job that failed after three waits left the next
     # Job's first 429 a full five-minute Quota Pause instead of the 429's own delay.

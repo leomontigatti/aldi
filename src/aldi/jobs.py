@@ -106,7 +106,9 @@ class JobStore:
 
     One Job translates at a time: they would otherwise compete for the same free quota. The turn goes to the Job
     dropped first among those ready; a Job that pauses (a Quota Pause, no connection, a refused key) gives it up
-    while it waits, and takes it again once its wait is over and the Job translating finishes or pauses.
+    while it waits, and takes it again once its wait is over and the Job translating finishes or pauses. A paused
+    Layout-kept Translation gives it up only to a Reading Version: its BabelDOC process stays alive meanwhile, and
+    a second one would take as much memory again to wait on the same flash quota.
 
     A page is done when its `pages/NNNN.json` exists: it holds the page's Spanish and the Term List after it, or
     `"failed": true` for a Failed Page, which only a retry of the Job's Failed Pages translates again.
@@ -141,10 +143,14 @@ class JobStore:
         self._keys = 0
         self._jobs: dict[str, Job] = {}
         self._cancelled: set[str] = set()
-        # The turn to translate: the Job holding it, and the Jobs ready for it with their place in the order.
+        # Jobs delivering their results or failing: she can no longer cancel them.
+        self._finishing: set[str] = set()
+        # The turn to translate: the Job holding it, the Jobs ready for it with their place in the order and whether
+        # they keep the layout, and the Layout-kept Translation whose BabelDOC runs, paused or not.
         self._turn = threading.Condition()
         self._holder: str | None = None
-        self._ready: dict[str, int] = {}
+        self._ready: dict[str, tuple[int, bool]] = {}
+        self._layout: str | None = None
         self._threads: list[threading.Thread] = []
         saved = [Job(**json.loads(path.read_text(encoding="utf-8"))) for path in self._jobs_dir.glob("*/job.json")]
         for job in sorted(saved, key=lambda job: job.number):
@@ -197,14 +203,16 @@ class JobStore:
                 number=number,
                 output_mode="layout" if output_mode == "layout" else "reading",
             )
+            # Its folder is ready before she sees the Job: a cancel from then on finds all there is to delete.
+            folder = self._folder(job.id)
+            folder.parent.mkdir(parents=True, exist_ok=True)
+            (self._dropped_dir / document.id).rename(folder)
+            (folder / "pages").mkdir()
             self._jobs[job.id] = job
-        folder = self._folder(job.id)
-        folder.parent.mkdir(parents=True, exist_ok=True)
-        (self._dropped_dir / document.id).rename(folder)
-        (folder / "pages").mkdir()
-        self._save(job)
+            self._write(job)
+            started = Job(**asdict(job))
         self._launch(job)
-        return self.get(job.id)
+        return started
 
     def retry(self, job_id: str) -> Job | None:
         """Translates a finished Job's Failed Pages again, delivering new results beside the first; None if none."""
@@ -212,22 +220,25 @@ class JobStore:
             job = self._jobs.get(job_id)
             if not job or job.state != "done" or not job.failed_pages:
                 return None
-            # Set under the lock so a second click cannot queue the same Job twice.
-            job.state = "queued"
-        for number in job.failed_pages:
-            (self._folder(job_id) / "pages" / f"{number:04d}.json").unlink(missing_ok=True)
-        self._update(job_id, failed_pages=[], notice="")
+            # In one step with queueing it: a second click cannot queue the same Job twice, and a cancel finds it
+            # ready to run, which deletes its folder.
+            for number in job.failed_pages:
+                _page_file(self._folder(job_id), number).unlink(missing_ok=True)
+            job.state, job.failed_pages, job.notice = "queued", [], ""
+            self._finishing.discard(job_id)
+            self._write(job)
+            retried = Job(**asdict(job))
         self._launch(job)
-        return self.get(job_id)
+        return retried
 
     def cancel(self, job_id: str) -> bool | None:
         """Stops a queued, running or paused Job and drops it with its Job folder; her delivered files stay. False
-        for a finished Job, None for no such Job."""
+        for a finished Job or one delivering its results, None for no such Job."""
         with self._lock:
             job = self._jobs.get(job_id)
             if not job:
                 return None
-            if job.state in ("done", "failed"):
+            if job.state in ("done", "failed") or job_id in self._finishing:
                 return False
             del self._jobs[job_id]
             self._cancelled.add(job_id)
@@ -271,7 +282,7 @@ class JobStore:
     def _launch(self, job: Job) -> None:
         """Runs the Job in a thread of its own once it has the turn; ready from now, so Jobs keep their order."""
         with self._turn:
-            self._ready[job.id] = job.number
+            self._ready[job.id] = (job.number, job.output_mode == "layout")
         thread = threading.Thread(target=self._work, args=(job.id,), name=f"aldi-job-{job.id}")
         self._threads = [other for other in self._threads if other.is_alive()] + [thread]
         thread.start()
@@ -297,10 +308,13 @@ class JobStore:
                 job = self.get(job_id)
                 if not job:
                     raise Closing
-                self._ready[job_id] = job.number
+                self._ready[job_id] = (job.number, job.output_mode == "layout")
 
             def first() -> bool:
-                return self._holder is None and min(self._ready, key=self._ready.__getitem__) == job_id
+                waiting = [
+                    other for other, (_, layout) in self._ready.items() if not layout or self._layout in (None, other)
+                ]
+                return self._holder is None and min(waiting, key=self._ready.__getitem__, default=None) == job_id
 
             try:
                 if waiting and not first() and not self._stopping(job_id):
@@ -341,24 +355,23 @@ class JobStore:
                 results = [
                     (result, f"{stem}{result.suffix}") for result in write_reading_version(translated, folder, stem)
                 ]
-            if self._stopping(job_id):
-                raise Closing
+            self._finish(job_id)
             # A retry of the Failed Pages lands beside the first results, numbered: she may have edited those.
             delivered = [deliver(result, self._documents_dir, job.name, filename) for result, filename in results]
         except Closing:
             return
         except Exception as error:
-            if self._stopping(job_id):
+            try:
+                self._finish(job_id)
+            except Closing:
                 # What a Job stopped mid-step raises, such as BabelDOC's process ended under it, is no bug.
                 return
             (folder / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
             details = reports.describe(error)
-            notice = self._report(job_id, problem, details, scanned, []) if reports.is_bug(error) else ""
+            notice = self._report(job, problem, details, scanned, []) if reports.is_bug(error) else ""
             self._update(job_id, state="failed", notice=notice)
             return
-        notice = (
-            self._report(job_id, "Failed Pages", reports.ErrorDetails(**failure), scanned, failed) if failure else ""
-        )
+        notice = self._report(job, "Failed Pages", reports.ErrorDetails(**failure), scanned, failed) if failure else ""
         self._update(
             job_id,
             state="done",
@@ -372,6 +385,15 @@ class JobStore:
         except OSError:
             # Her files are written and listed; a file browser that did not open is no reason to fail the Job.
             (folder / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
+
+    def _finish(self, job_id: str) -> None:
+        """From here on the Job delivers its results or fails, and she can no longer cancel it: a cancel then would
+        leave files in her Documents folder that no Job lists. Raises `Closing` when she cancelled it already or the
+        app is closing."""
+        with self._lock:
+            if self._stopping(job_id):
+                raise Closing
+            self._finishing.add(job_id)
 
     def _translate_pages(
         self, job_id: str, folder: Path, pages: Sequence[int]
@@ -414,6 +436,16 @@ class JobStore:
         """The Layout-kept Translation's PDF. BabelDOC lays out every page before it asks Gemini anything, so the
         progress moves only when it is done. Each prompt waits out a Quota Pause, a lost connection or a refused key
         while BabelDOC waits for its answer."""
+        with self._turn:
+            self._layout = job_id
+        try:
+            return self._write_layout_kept(job_id, folder, pages)
+        finally:
+            with self._turn:
+                self._layout = None
+                self._turn.notify_all()
+
+    def _write_layout_kept(self, job_id: str, folder: Path, pages: Sequence[int]) -> Path:
         self._update(job_id, state="running", pages=len(pages))
         (folder / "layout").mkdir(exist_ok=True)
 
@@ -476,10 +508,10 @@ class JobStore:
         return answers
 
     def _report(
-        self, job_id: str, problem: str, details: reports.ErrorDetails, scanned: Sequence[bool], failed: Sequence[int]
+        self, job: Job, problem: str, details: reports.ErrorDetails, scanned: Sequence[bool], failed: Sequence[int]
     ) -> str:
-        """Files an Error Report about this Job, whose pages are scanned or not as `scanned` says; returns what she
-        is told about it."""
+        """Files an Error Report about a finishing Job, whose pages are scanned or not as `scanned` says; returns
+        what she is told about it."""
         with_text = sum(not page for page in scanned)
         if not scanned:
             kind = "unknown"
@@ -487,7 +519,7 @@ class JobStore:
             kind = "born-digital"
         else:
             kind = "mixed" if with_text else "scanned"
-        mode = "Layout-kept Translation" if self.get(job_id).output_mode == "layout" else "Reading Version"
+        mode = "Layout-kept Translation" if job.output_mode == "layout" else "Reading Version"
         return self._reporter.report(problem, details, Context(mode, kind, len(scanned), list(failed)))
 
     def _ask(self, job_id: str, request: Callable[[], _Answer]) -> _Answer:
@@ -548,11 +580,6 @@ class JobStore:
                 raise Closing
             for key, value in changes.items():
                 setattr(job, key, value)
-            self._write(job)
-
-    def _save(self, job: Job) -> None:
-        with self._lock:
-            self._jobs[job.id] = job
             self._write(job)
 
     def _write(self, job: Job) -> None:

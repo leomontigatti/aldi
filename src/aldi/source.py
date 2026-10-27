@@ -135,8 +135,8 @@ def _read_items(page: pymupdf.Page, folder: Path) -> list[_Item]:
     items = []
     blocks = page.get_text("dict", flags=_TEXT_FLAGS)["blocks"]
     images = [pymupdf.Rect(block["bbox"]) for block in blocks if block["type"] == 1]
-    tables, grids = _tables(page, images)
-    drawn = _drawn_figures(page, blocks, grids)
+    tables = _tables(page, images)
+    drawn = _drawn_figures(page, blocks, list(tables))
     # A table drawn inside a Figure, such as two boxes of a decision tree side by side, is part of the Figure.
     tables = {rect: rows for rect, rows in tables.items() if not any(figure.contains(rect) for figure in drawn)}
     for rect, rows in tables.items():
@@ -173,20 +173,16 @@ def _read_items(page: pymupdf.Page, folder: Path) -> list[_Item]:
     return _reading_order(items, page.rect.width)
 
 
-def _tables(
-    page: pymupdf.Page, images: list[pymupdf.Rect]
-) -> tuple[dict[pymupdf.Rect, list[list[str]]], list[pymupdf.Rect]]:
-    """Where the page has a table, and its cells' text, row by row; and every ruled grid not drawn over a photo
-    whose cells hold text, tables or not: none of them is a drawn Figure."""
-    tables, grids = {}, []
+def _tables(page: pymupdf.Page, images: list[pymupdf.Rect]) -> dict[pymupdf.Rect, list[list[str]]]:
+    """Where the page has a table, and its cells' text, row by row. A ruled grid that is no table, such as the
+    frames of a drawing's panels around their letters, may be part of a drawn Figure."""
+    tables = {}
     for table in page.find_tables().tables:
         rect = pymupdf.Rect(table.bbox)
         rows = [[_escape(" ".join((cell or "").split())) for cell in row] for row in table.extract()]
         if table.row_count and _is_table(rect, rows, images):
             tables[rect] = rows
-        if not _over_image(rect, images) and any(cell for row in rows for cell in row):
-            grids.append(rect)
-    return tables, grids
+    return tables
 
 
 def _over_image(rect: pymupdf.Rect, images: list[pymupdf.Rect]) -> bool:

@@ -1,5 +1,6 @@
 """A Born-digital PDF's Reading Version keeps its figures, tables, emphasis and references (#5)."""
 
+import html
 import json
 import re
 import zipfile
@@ -623,3 +624,52 @@ def test_a_ruled_table_of_symbols_stays_a_table_with_its_labels_translated(app, 
     assert "<w:tbl>" in docx_xml(docx)
     sent = [text for request in translator.requests for text in request]
     assert {"Flap", "Graft", "Resin"} <= set(sent)
+
+
+def test_a_ruled_drawing_whose_grid_holds_only_panel_letters_comes_out_as_one_image(
+    app, translator, documents_dir, tmp_path
+):
+    # Bug: the ruling around four bar charts read as a grid of text, though not a table, so the drawing was never a
+    # Figure: it vanished and its panel letters came out as paragraphs.
+    document = pymupdf.open()
+    page = document.new_page()
+    page.insert_text((50, 60), "The panels show the bond strength.", fontsize=11)
+    for index, letter in enumerate("ABCD"):
+        row, column = divmod(index, 2)
+        panel = pymupdf.Rect(60 + column * 220, 90 + row * 140, 280 + column * 220, 230 + row * 140)
+        page.draw_rect(panel, color=(0, 0, 0), width=0.8)
+        page.insert_text((panel.x0 + 6, panel.y0 + 14), letter, fontsize=10)
+        for bar in range(4):
+            x = panel.x0 + 40 + bar * 40
+            bar_rect = pymupdf.Rect(x, panel.y1 - 30 - bar * 20, x + 20, panel.y1 - 10)
+            page.draw_rect(bar_rect, color=None, fill=(0.3, 0.4, 0.7))
+    page.insert_text((60, 400), "Figure 3. Bond strength by adhesive.", fontsize=10)
+    document.save(source := tmp_path / "Paneles.pdf")
+
+    app.wait_for(app.upload(source)["id"])
+
+    docx = documents_dir / "Aldi" / "Paneles" / "Paneles (es).docx"
+    assert len([name for name in zipfile.ZipFile(docx).namelist() if name.startswith("word/media/")]) == 1
+    assert "ES: Figure 3." in docx_text(docx)
+    sent = [text for request in translator.requests for text in request]
+    assert not [text for text in sent if text in ("A B", "C D")]
+
+
+def test_a_star_of_the_original_stays_when_the_translator_adds_emphasis_after_it(
+    app, translator, documents_dir, tmp_path
+):
+    # Bug: the original's star and the first star of the emphasis Gemini added were taken for one pair, so hers was
+    # dropped and an invented one printed.
+    source = build_born_digital_pdf(tmp_path / "Valor.pdf", [["*p < 0.05 is significant."]])
+    translate = translator.translate_texts
+    answer = r"\*p < 0.05 y \*significativo\*"
+    translator.translate_texts = lambda texts, terms: TextTranslation(
+        [answer for _text in texts], translate(texts, terms).terms
+    )
+
+    app.wait_for(app.upload(source)["id"])
+
+    folder = documents_dir / "Aldi" / "Valor"
+    for text in (pdf_text(folder / "Valor (es).pdf"), html.unescape(docx_text(folder / "Valor (es).docx"))):
+        assert "*p < 0.05 y significativo" in text
+        assert text.count("*") == 1

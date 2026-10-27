@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 
+from aldi import jobs
 from aldi.translator import KeyRefused, QuotaExhausted
 from conftest import AppClosed, FakeTranslator, build_born_digital_pdf, pdf_text, refused, wait_until
 
@@ -356,3 +357,130 @@ def test_a_finished_or_unknown_job_cannot_be_cancelled(app, tmp_path):
     )
     assert refused(lambda: app.send("POST", "/api/jobs/nada/cancel"))[0] == 404
     assert app.get(f"/api/jobs/{job_id}")["state"] == "done"
+
+
+def test_cancelling_while_the_results_are_delivered_answers_that_the_job_finished(
+    app, translator, github, documents_dir, tmp_path, monkeypatch
+):
+    # Bug: a cancel between the last check and the copies succeeded, so her Documents folder got files no Job
+    # listed; with a Failed Page, filing its report then crashed on the Job the cancel had dropped.
+    translate = translator.translate_texts
+
+    def fails_page_two(texts, terms):
+        if texts == ["Enamel two."]:
+            raise RuntimeError("unreadable")
+        return translate(texts, terms)
+
+    translator.translate_texts = fails_page_two
+    delivering, cancel_answered = threading.Event(), threading.Event()
+    deliver = jobs.deliver
+
+    def held(*args):
+        delivering.set()
+        cancel_answered.wait(timeout=5)
+        return deliver(*args)
+
+    monkeypatch.setattr(jobs, "deliver", held)
+    job_id = app.upload(build_born_digital_pdf(tmp_path / "Esmalte.pdf", [["Enamel one."], ["Enamel two."]]))["id"]
+    assert delivering.wait(timeout=30)
+
+    answer = refused(lambda: app.send("POST", f"/api/jobs/{job_id}/cancel"))
+    cancel_answered.set()
+
+    assert answer == (409, "Esta traducción ya terminó.")
+    job = app.wait_for(job_id)
+    assert (job["state"], job["failed_pages"]) == ("done", [2])
+    assert sorted(path.name for path in (documents_dir / "Aldi" / "Esmalte").iterdir()) == sorted(job["results"])
+    assert len(github.reports()) == 1
+
+
+def held_until_cancelled(monkeypatch, method, applies):
+    """Holds each call of `Path.<method>` that `applies` to until a cancel has answered, or for a second when that
+    cancel waits for the call to finish; returns the events of the call held and of the cancel answered."""
+    held, cancel_answered = threading.Event(), threading.Event()
+    original = getattr(Path, method)
+
+    def holding(path, *args, **kwargs):
+        if applies(path, *args):
+            held.set()
+            cancel_answered.wait(timeout=1)
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, method, holding)
+    return held, cancel_answered
+
+
+def in_background(request):
+    """Runs a request in a thread; the returned list holds its answer, or its refusal's status and error, once the
+    thread is joined."""
+    answers = []
+
+    def run():
+        try:
+            answers.append(request())
+        except urllib.error.HTTPError as error:
+            answers.append((error.code, json.load(error)["error"]))
+        except Exception as error:
+            answers.append(error)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    return thread, answers
+
+
+def test_cancelling_a_job_as_it_starts_drops_it_for_good(app, translator, tmp_path, monkeypatch):
+    # Bug: the Job was listed before its folder was ready, and saving it there brought a cancelled Job back as
+    # queued for the rest of the run.
+    document = app.drop(build_born_digital_pdf(tmp_path / "Esmalte.pdf", [["Enamel one."]]))
+    held, cancel_answered = held_until_cancelled(
+        monkeypatch, "rename", lambda path, target: Path(target).name == document["id"]
+    )
+
+    starting, started = in_background(lambda: app.send("POST", "/api/jobs", {"document": document["id"]}))
+    assert held.wait(timeout=10)
+    cancelling, cancelled = in_background(lambda: app.send("POST", f"/api/jobs/{document['id']}/cancel"))
+    cancelling.join(timeout=10)
+    cancel_answered.set()
+    starting.join(timeout=10)
+
+    assert cancelled == [{}]
+    assert started[0]["id"] == document["id"]
+    wait_until(lambda: not job_folder(tmp_path, document["id"]).exists())
+    assert app.get("/api/jobs")["jobs"] == []
+    assert translator.requests == []
+
+
+def test_cancelling_a_retry_as_it_starts_drops_the_job_and_its_folder(
+    app, translator, documents_dir, tmp_path, monkeypatch
+):
+    # Bug: the retry request failed on the Job the cancel had dropped, before any worker could delete its folder,
+    # which then stayed for good.
+    translate = translator.translate_texts
+    failing = [True]
+
+    def fails_page_two(texts, terms):
+        if texts == ["Enamel two."] and failing[0]:
+            raise RuntimeError("unreadable")
+        return translate(texts, terms)
+
+    translator.translate_texts = fails_page_two
+    source = build_born_digital_pdf(tmp_path / "Esmalte.pdf", [["Enamel one."], ["Enamel two."]])
+    job_id = app.upload(source)["id"]
+    assert app.wait_for(job_id)["failed_pages"] == [2]
+    failing[0] = False
+    held, cancel_answered = held_until_cancelled(monkeypatch, "unlink", lambda path: path.name == "0002.json")
+
+    retrying, retried = in_background(lambda: app.send("POST", f"/api/jobs/{job_id}/retry"))
+    assert held.wait(timeout=10)
+    cancelling, cancelled = in_background(lambda: app.send("POST", f"/api/jobs/{job_id}/cancel"))
+    cancelling.join(timeout=10)
+    cancel_answered.set()
+    retrying.join(timeout=10)
+
+    assert cancelled == [{}]
+    assert retried[0]["id"] == job_id
+    wait_until(lambda: not job_folder(tmp_path, job_id).exists())
+    assert app.get("/api/jobs")["jobs"] == []
+    assert ["Enamel two."] not in translator.requests[2:]
+    results = documents_dir / "Aldi" / "Esmalte"
+    assert sorted(path.name for path in results.iterdir()) == ["Esmalte (es).docx", "Esmalte (es).pdf"]
