@@ -21,7 +21,7 @@ goes under this worktree's git-ignored `jobs/`.
 Drive a **Job** the way she would: drop a PDF, set the **Page Range** and **Output Mode**, wait, open the result.
 
 - **In a T3 thread**: the preview tools on the URL `dev` printed, as the shared `implement` skill's
-  `PREVIEW.md` says. Drop a file with `preview_upload`.
+  `PREVIEW.md` says. Drop a file with `preview_act` (`action: "upload"`).
 - **Outside T3**: the same in a browser, or the job function from a test.
 
 Use a PDF the tests build when it proves the change, since it spends no quota. A real document from `samples/`
