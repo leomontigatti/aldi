@@ -2,6 +2,7 @@
 
 import json
 import time
+import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 
 import httpx
@@ -105,7 +106,11 @@ class _ConnectTimeout(httpx.HTTPTransport):
 def make_client(api_key: str) -> genai.Client:
     """Gemini's client for her key, its requests cut after `REQUEST_TIMEOUT`, or `CONNECT_TIMEOUT` while
     connecting."""
-    options = types.HttpOptions(timeout=REQUEST_TIMEOUT * 1000, client_args={"transport": _ConnectTimeout()})
+    # A transport of our own makes httpx skip the system proxy, so it is given the one httpx would have found: from
+    # the environment, the Windows registry or macOS's network settings.
+    proxies = urllib.request.getproxies()
+    transport = _ConnectTimeout(proxy=proxies.get("https") or proxies.get("all"))
+    options = types.HttpOptions(timeout=REQUEST_TIMEOUT * 1000, client_args={"transport": transport})
     return genai.Client(api_key=api_key, http_options=options)
 
 
@@ -179,8 +184,8 @@ class GeminiTranslator:
         that model; a JSON answer matching `schema` when there is one.
 
         A model that refuses her key access (a `403`) is unavailable to her, like one out of quota; only when every
-        model asked refuses it is the key refused."""
-        asked = refused = 0
+        model refuses it, none skipped for its quota, is the key refused."""
+        skipped = refused = 0
         for model in chain or self._chain:
             gemma = model.startswith("gemma")
             config = types.GenerateContentConfig(
@@ -190,8 +195,8 @@ class GeminiTranslator:
                 max_output_tokens=32768 if gemma else 65536,
             )
             if self._clock() < self._out_of_quota_until.get(model, 0):
+                skipped += 1
                 continue
-            asked += 1
             try:
                 response = self._ask(model, contents, config)
             except _Forbidden:
@@ -199,7 +204,7 @@ class GeminiTranslator:
                 continue
             if response is not None:
                 return model, response
-        if refused and refused == asked:
+        if refused and not skipped and refused == len(chain or self._chain):
             raise KeyRefused
         raise QuotaExhausted
 

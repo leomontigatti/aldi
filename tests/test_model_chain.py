@@ -195,6 +195,35 @@ def test_the_real_client_reports_a_connection_it_cannot_open_as_offline(monkeypa
         GeminiTranslator(make_client("AIza-de-prueba")).translate_texts(["The enamel is hard."], {})
 
 
+def test_the_real_client_goes_through_the_system_proxy(monkeypatch):
+    # Bug: the transport that gives connecting its own timeout made httpx ignore the system proxy, so a laptop that
+    # reaches the internet only through one read as offline.
+    with socket.socket() as proxy:
+        proxy.bind(("127.0.0.1", 0))
+        proxy.listen()
+        monkeypatch.setenv("HTTPS_PROXY", f"http://127.0.0.1:{proxy.getsockname()[1]}")
+        monkeypatch.delenv("NO_PROXY", raising=False)
+        monkeypatch.delenv("no_proxy", raising=False)
+        asked = []
+
+        def accept():
+            connection, _address = proxy.accept()
+            # Listening no longer: the client's retries are refused at once instead of waiting on an answer.
+            proxy.close()
+            with connection:
+                asked.append(connection.recv(1024).split(b"\r\n", 1)[0])
+
+        listener = threading.Thread(target=accept, daemon=True)
+        listener.start()
+        with pytest.raises(Exception):  # noqa: B017  the proxy hangs up: what matters is that it was asked
+            GeminiTranslator(make_client("AIza-de-prueba"), chain=(FLASH,), sleep=lambda _s: None).translate_texts(
+                ["Hard."], {}
+            )
+        listener.join(timeout=10)
+
+    assert asked == [b"CONNECT generativelanguage.googleapis.com:443 HTTP/1.1"]
+
+
 def test_another_gemini_error_fails_the_page_without_trying_the_other_models(app, gemini, tmp_path):
     invalid = errors.ClientError(400, {"error": {"code": 400, "status": "INVALID_ARGUMENT"}})
     gemini.fail(FLASH, invalid, invalid, invalid)
@@ -317,6 +346,21 @@ def test_a_model_refusing_access_moves_the_request_down_the_chain(translator, ge
 
     assert translation.texts == ["ES: The enamel is hard."]
     assert gemini.calls == [FLASH, LITE]
+
+
+def test_a_403_while_the_other_models_cool_down_from_quota_is_not_a_refused_key(translator, gemini):
+    # Bug: with flash and flash-lite skipped for a long quota cooldown, Gemma's 403 was the only answer asked, so the
+    # key counted as refused and the Job waited for a new key that she did not need.
+    gemini.fail(FLASH, quota_error("3600s"))
+    gemini.fail(LITE, quota_error("3600s"))
+    gemini.fail(GEMMA, key_error(403), key_error(403))
+
+    with pytest.raises(QuotaExhausted):
+        translator.translate_texts(["The enamel is hard."], {})
+    with pytest.raises(QuotaExhausted):
+        translator.translate_texts(["The enamel is hard."], {})
+
+    assert gemini.calls == [FLASH, LITE, GEMMA, GEMMA]
 
 
 def test_an_error_report_names_the_model_that_failed_not_the_whole_chain(app, gemini, github, tmp_path):
