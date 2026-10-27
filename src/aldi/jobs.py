@@ -4,14 +4,25 @@ import json
 import threading
 import traceback
 import uuid
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from aldi.results import deliver, document_name
 from aldi.source import read_pages
-from aldi.translator import Translator
+from aldi.translator import Offline, QuotaExhausted, TextTranslation, Translator
 from aldi.writer import TranslatedPage, write_reading_version
+
+QUOTA_PAUSE_NOTICE = "En pausa hasta que Gemini vuelva a estar disponible"
+OFFLINE_NOTICE = "Sin conexión a internet"
+# Seconds before a paused Job asks Gemini again: a per-minute quota is back by then, a daily one costs a few 429s.
+QUOTA_PAUSE = 5 * 60
+OFFLINE_WAIT = 30
+
+
+class _Closing(Exception):
+    """The app is closing while a Job waits: it stops where it is, its finished pages kept."""
 
 
 @dataclass
@@ -19,7 +30,7 @@ class Job:
     id: str
     name: str
     state: str = "queued"
-    """queued, running, done or failed."""
+    """queued, running, paused, done or failed."""
     page: int = 0
     """How many pages are translated so far."""
     pages: int = 0
@@ -27,13 +38,23 @@ class Job:
     """The delivered files' names, inside `<Documents>/Aldi/<name>/`."""
     folder: str = ""
     """The results' folder, for the UI to show."""
+    notice: str = ""
+    """What the UI says under the state besides the progress, such as why a Job is paused."""
 
 
 class JobStore:
-    def __init__(self, data_dir: Path, documents_dir: Path, translator: Translator):
+    def __init__(
+        self,
+        data_dir: Path,
+        documents_dir: Path,
+        translator: Translator,
+        sleep: Callable[[float], None] | None = None,
+    ):
         self._jobs_dir = data_dir / "jobs"
         self._documents_dir = documents_dir
         self._translator = translator
+        self._closing = threading.Event()
+        self._sleep = sleep or self._closing.wait
         self._lock = threading.Lock()
         self._jobs: dict[str, Job] = {}
         # One Job at a time: they would otherwise compete for the same free quota.
@@ -58,6 +79,7 @@ class JobStore:
             return [Job(**asdict(job)) for job in self._jobs.values()]
 
     def close(self) -> None:
+        self._closing.set()
         self._worker.shutdown(wait=False, cancel_futures=True)
 
     def _run(self, job_id: str) -> None:
@@ -68,7 +90,7 @@ class JobStore:
             terms: dict[str, str] = {}
             translated = []
             for page in source:
-                answer = self._translator.translate_texts(page.texts, terms) if page.texts else None
+                answer = self._translate(job_id, page.texts, terms) if page.texts else None
                 texts = answer.texts if answer else []
                 terms = answer.terms if answer else terms
                 (folder / "pages" / f"{page.number:04d}.json").write_text(
@@ -81,9 +103,31 @@ class JobStore:
             results = write_reading_version(translated, folder, stem)
             delivered = [deliver(result, self._documents_dir, name, f"{stem}{result.suffix}") for result in results]
             self._update(job_id, state="done", results=[d.name for d in delivered], folder=str(delivered[0].parent))
+        except _Closing:
+            return
         except Exception:
             (folder / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
             self._update(job_id, state="failed")
+
+    def _translate(self, job_id: str, texts: Sequence[str], terms: Mapping[str, str]) -> TextTranslation:
+        """The page's translation, waiting out a Quota Pause or a lost connection as often as it takes."""
+        while True:
+            try:
+                answer = self._translator.translate_texts(texts, terms)
+            except QuotaExhausted:
+                self._wait(job_id, QUOTA_PAUSE_NOTICE, QUOTA_PAUSE)
+            except Offline:
+                self._wait(job_id, OFFLINE_NOTICE, OFFLINE_WAIT)
+            else:
+                if self.get(job_id).state == "paused":
+                    self._update(job_id, state="running", notice="")
+                return answer
+
+    def _wait(self, job_id: str, notice: str, seconds: float) -> None:
+        self._update(job_id, state="paused", notice=notice)
+        self._sleep(seconds)
+        if self._closing.is_set():
+            raise _Closing
 
     def _update(self, job_id: str, **changes) -> None:
         with self._lock:

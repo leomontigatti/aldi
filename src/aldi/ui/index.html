@@ -20,11 +20,42 @@
   .done .state { color: #2d7a3a; }
   .failed .state { color: #a33; }
   .folder { font-size: .85rem; color: #666; word-break: break-all; }
+  header { display: flex; justify-content: space-between; align-items: baseline; }
+  button.link { background: none; border: none; color: #2a6f97; padding: 0; text-decoration: underline; }
+  #key-screen ol { padding-left: 1.4rem; }
+  #key-screen ol li { list-style: decimal; background: none; padding: 0; margin-bottom: .5rem; }
+  #key-form { display: flex; gap: .5rem; flex-wrap: wrap; }
+  #key { flex: 1; min-width: 16rem; font: inherit; padding: .5rem; border: 1px solid #9a9a9a; border-radius: 8px; }
+  #key-message { color: #a33; min-height: 1.5em; }
+  #key-message.ok { color: #2d7a3a; }
+  [hidden] { display: none !important; }
 </style>
 </head>
 <body>
-<h1>Aldi</h1>
+<header>
+  <h1>Aldi</h1>
+  <button type="button" class="link" id="open-settings" hidden>Ajustes</button>
+</header>
 <p class="lead">Traduce al español un PDF en inglés o portugués.</p>
+<section id="key-screen" hidden>
+  <h2 id="key-title">Antes de empezar: tu clave de Gemini</h2>
+  <p id="key-intro">Aldi traduce con Gemini, de Google. Para usarlo necesitas una clave gratuita, que se crea una sola vez:</p>
+  <ol>
+    <li>Entra en <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> con tu cuenta de Google.</li>
+    <li>Si te lo pide, acepta las condiciones de uso.</li>
+    <li>Pulsa <strong>Create API key</strong> («Crear clave de API»). Si te pregunta por un proyecto, elige el que te ofrece.</li>
+    <li>Cuando aparezca la clave (empieza con <code>AIza</code>), pulsa el botón de copiar.</li>
+    <li>Vuelve aquí, pégala abajo y pulsa <strong>Guardar clave</strong>.</li>
+  </ol>
+  <p>Es gratis: no hace falta tarjeta ni suscripción.</p>
+  <form id="key-form">
+    <input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="Pega aquí tu clave" aria-label="Clave de Gemini">
+    <button type="submit" id="save-key">Guardar clave</button>
+  </form>
+  <p id="key-message" role="alert"></p>
+  <button type="button" class="link" id="close-settings" hidden>Volver</button>
+</section>
+<main id="home" hidden>
 <div id="drop">
   <p>Arrastra un PDF aquí</p>
   <p>o</p>
@@ -34,6 +65,7 @@
 <p id="message" role="alert"></p>
 <h2>Traducciones</h2>
 <ul id="jobs"></ul>
+</main>
 <script>
 const drop = document.getElementById("drop");
 const file = document.getElementById("file");
@@ -68,6 +100,7 @@ async function send(pdf) {
 function describe(job) {
   if (job.state === "queued") return "En espera";
   if (job.state === "running") return job.pages ? `Traduciendo… Página ${job.page} de ${job.pages}` : "Traduciendo…";
+  if (job.state === "paused") return `${job.notice}. Página ${job.page} de ${job.pages}`;
   if (job.state === "done") return "Lista";
   return "Algo salió mal.";
 }
@@ -98,8 +131,67 @@ async function refresh() {
   }
 }
 
-refresh();
-setInterval(refresh, 1000);
+const home = document.getElementById("home");
+const keyScreen = document.getElementById("key-screen");
+const keyInput = document.getElementById("key");
+const keyMessage = document.getElementById("key-message");
+const openSettings = document.getElementById("open-settings");
+const closeSettings = document.getElementById("close-settings");
+
+function show(screen, hasKey) {
+  home.hidden = screen !== "home";
+  keyScreen.hidden = screen !== "key";
+  openSettings.hidden = screen !== "home";
+  closeSettings.hidden = !hasKey;
+  document.getElementById("key-title").textContent = hasKey ? "Ajustes: tu clave de Gemini" : "Antes de empezar: tu clave de Gemini";
+  document.getElementById("key-intro").textContent = hasKey
+    ? "Tu clave ya está guardada. Para cambiarla por otra, crea una nueva así:"
+    : "Aldi traduce con Gemini, de Google. Para usarlo necesitas una clave gratuita, que se crea una sola vez:";
+  document.getElementById("save-key").textContent = hasKey ? "Cambiar clave" : "Guardar clave";
+  keyInput.value = "";
+  keyMessage.textContent = "";
+  keyMessage.className = "";
+}
+
+openSettings.addEventListener("click", () => show("key", true));
+closeSettings.addEventListener("click", () => show("home", true));
+document.getElementById("key-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = document.getElementById("save-key");
+  button.disabled = true;
+  keyMessage.className = "";
+  keyMessage.textContent = "Comprobando la clave…";
+  try {
+    const response = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: keyInput.value }),
+    });
+    if (response.ok) {
+      show("home", true);
+      message.textContent = "";
+    } else {
+      keyMessage.textContent = (await response.json()).error;
+    }
+  } catch {
+    keyMessage.textContent = "No se pudo comprobar la clave. Inténtalo de nuevo.";
+  }
+  button.disabled = false;
+});
+
+async function start() {
+  try {
+    const { has_key } = await (await fetch("/api/settings")).json();
+    show(has_key ? "home" : "key", has_key);
+  } catch {
+    setTimeout(start, 1000);
+    return;
+  }
+  refresh();
+  setInterval(refresh, 1000);
+}
+
+start();
 </script>
 </body>
 </html>
