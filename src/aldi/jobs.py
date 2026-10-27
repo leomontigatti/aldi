@@ -18,13 +18,14 @@ from aldi.reading import PAGE_BATCH, read_page_batch, translate_page
 from aldi.reports import Context, Reporter
 from aldi.results import deliver, document_name
 from aldi.source import SourcePage, inspect, read_pages, render_page
-from aldi.translator import Offline, QuotaExhausted, Translator
+from aldi.translator import KeyRefused, Offline, QuotaExhausted, Translator
 from aldi.writer import TranslatedPage, write_reading_version
 
 # A page gets two retries before it becomes a Failed Page.
 _ATTEMPTS = 3
 QUOTA_PAUSE_NOTICE = "En pausa hasta que Gemini vuelva a estar disponible"
 OFFLINE_NOTICE = "Sin conexión a internet"
+KEY_REFUSED_NOTICE = "Tu clave de Gemini dejó de funcionar. Revisa la clave en Ajustes."
 # Seconds before a paused Job asks Gemini again: a per-minute quota is back by then, a daily one costs a few 429s.
 QUOTA_PAUSE = 5 * 60
 OFFLINE_WAIT = 30
@@ -32,8 +33,19 @@ OFFLINE_WAIT = 30
 _Answer = TypeVar("_Answer")
 
 
-class _Closing(Exception):
+class Closing(Exception):
     """The app is closing while a Job waits: it stops where it is, its finished pages kept."""
+
+
+def closing_wait(closing: threading.Event) -> Callable[[float], None]:
+    """A wait of some seconds that the app closing ends at once, raising `Closing`: the Job store's, and the
+    translator's between its retries."""
+
+    def wait(seconds: float) -> None:
+        if closing.wait(seconds):
+            raise Closing
+
+    return wait
 
 
 @dataclass
@@ -100,7 +112,10 @@ class JobStore:
         open_folder: Callable[[Path], None],
         reporter: Reporter,
         sleep: Callable[[float], None] | None = None,
+        closing: threading.Event | None = None,
     ):
+        """`closing` is set when the app closes, `closing_wait(closing)` being the translator's waits too; `sleep`
+        stands in for the store's own waits in tests."""
         self._jobs_dir = data_dir / "jobs"
         # A PDF dropped but never started is not kept past the app's run.
         self._dropped_dir = data_dir / "dropped"
@@ -111,8 +126,11 @@ class JobStore:
         self._open_folder = open_folder
         self._reporter = reporter
         self._lock = threading.Lock()
-        self._closing = threading.Event()
-        self._sleep = sleep or self._closing.wait
+        self._closing = closing or threading.Event()
+        self._sleep = sleep or closing_wait(self._closing)
+        # Counts the keys she saved, for a Job waiting on a refused key to know a new one is there.
+        self._key_saved = threading.Condition()
+        self._keys = 0
         self._jobs: dict[str, Job] = {}
         # One Job at a time: they would otherwise compete for the same free quota.
         self._worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="aldi-job")
@@ -199,9 +217,17 @@ class JobStore:
         with self._lock:
             return [Job(**asdict(job)) for job in self._jobs.values()]
 
+    def key_saved(self) -> None:
+        """She saved a new key: a Job paused on a refused one goes on."""
+        with self._key_saved:
+            self._keys += 1
+            self._key_saved.notify_all()
+
     def close(self) -> None:
         """Stops after the page in hand; the Job resumes from the next page when the app starts again."""
-        self._closing.set()
+        with self._key_saved:
+            self._closing.set()
+            self._key_saved.notify_all()
         self._worker.shutdown(wait=True, cancel_futures=True)
 
     def _run(self, job_id: str) -> None:
@@ -228,7 +254,7 @@ class JobStore:
                 ]
             # A retry of the Failed Pages lands beside the first results, numbered: she may have edited those.
             delivered = [deliver(result, self._documents_dir, job.name, filename) for result, filename in results]
-        except _Closing:
+        except Closing:
             return
         except Exception as error:
             (folder / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
@@ -267,7 +293,7 @@ class JobStore:
             done = _page_file(folder, page.number)
             if not done.exists():
                 if self._closing.is_set():
-                    raise _Closing
+                    raise Closing
                 batch = _page_batch(source[index:], folder) if page.scanned else [page]
                 answers = (
                     self._read_scanned(job_id, batch, folder, terms)
@@ -312,7 +338,7 @@ class JobStore:
                 ),
             )
         except Cancelled as cancelled:
-            raise _Closing from cancelled
+            raise Closing from cancelled
         self._update(job_id, page=len(pages))
         return result
 
@@ -321,7 +347,7 @@ class JobStore:
         for _ in range(_ATTEMPTS):
             try:
                 spanish, after = self._ask(job_id, lambda: translate_page(page, self._translator, terms))
-            except _Closing:
+            except Closing:
                 raise
             except Exception as exception:
                 last = exception
@@ -338,7 +364,7 @@ class JobStore:
                 translated, after = self._ask(
                     job_id, lambda: read_page_batch(pages, folder / "source.pdf", folder, self._translator, terms)
                 )
-            except _Closing:
+            except Closing:
                 raise
             except Exception as exception:
                 last = exception
@@ -370,15 +396,18 @@ class JobStore:
         return reports.SENT if sent else reports.QUEUED
 
     def _ask(self, job_id: str, request: Callable[[], _Answer]) -> _Answer:
-        """The request's answer, waiting out a Quota Pause or a lost connection as often as it takes: neither is the
-        page's fault, so neither makes it a Failed Page."""
+        """The request's answer, waiting out a Quota Pause, a lost connection or a refused key as often as it takes:
+        none is the page's fault, so none makes it a Failed Page."""
         while True:
+            keys = self._keys
             try:
                 answer = request()
             except QuotaExhausted:
                 self._wait(job_id, QUOTA_PAUSE_NOTICE, QUOTA_PAUSE)
             except Offline:
                 self._wait(job_id, OFFLINE_NOTICE, OFFLINE_WAIT)
+            except KeyRefused:
+                self._wait_for_key(job_id, keys)
             else:
                 if self.get(job_id).state == "paused":
                     self._update(job_id, state="running", notice="")
@@ -388,7 +417,15 @@ class JobStore:
         self._update(job_id, state="paused", notice=notice)
         self._sleep(seconds)
         if self._closing.is_set():
-            raise _Closing
+            raise Closing
+
+    def _wait_for_key(self, job_id: str, keys: int) -> None:
+        """Asks Gemini nothing until she saves a key after the `keys`-th, the one it refused."""
+        self._update(job_id, state="paused", notice=KEY_REFUSED_NOTICE)
+        with self._key_saved:
+            self._key_saved.wait_for(lambda: self._keys != keys or self._closing.is_set())
+        if self._closing.is_set():
+            raise Closing
 
     def open_folder(self, job_id: str) -> bool:
         """Shows a finished Job's results folder; False when there is no such folder yet."""
