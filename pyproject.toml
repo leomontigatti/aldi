@@ -27,6 +27,7 @@ aldi = "aldi.app:main"
 test = [
     "rust-just>=1.58",
     "pytest>=9.0",
+    "psutil>=7.2",
 ]
 lint = [
     "pre-commit>=4.6",

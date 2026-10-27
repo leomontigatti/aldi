@@ -4,6 +4,7 @@ BabelDOC keeps 1-2 GB after every run in the process it ran in; a child process 
 when it exits. Its prompts go to the app over a pipe, so every Gemini request stays in the app's Translator.
 """
 
+import os
 import threading
 import traceback
 from multiprocessing.connection import Connection
@@ -68,8 +69,12 @@ class _Translator(BaseTranslator):
             # BabelDOC's check that this translator takes whole prompts.
             return None
         with self._lock:
-            self._app.send(("prompt", text))
-            _kind, answer = self._app.recv()
+            try:
+                self._app.send(("prompt", text))
+                _kind, answer = self._app.recv()
+            except (EOFError, OSError):
+                # The app is gone: nobody will ever answer, nor read what this process would write.
+                os._exit(1)
         return answer
 
     def do_translate(self, text, rate_limit_params: dict | None = None):

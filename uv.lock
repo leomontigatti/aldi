@@ -106,6 +106,7 @@ lint = [
     { name = "zizmor" },
 ]
 test = [
+    { name = "psutil" },
     { name = "pytest" },
     { name = "rust-just" },
 ]
@@ -132,6 +133,7 @@ lint = [
     { name = "zizmor", specifier = ">=1.30" },
 ]
 test = [
+    { name = "psutil", specifier = ">=7.2" },
     { name = "pytest", specifier = ">=9.0" },
     { name = "rust-just", specifier = ">=1.58" },
 ]

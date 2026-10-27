@@ -1,13 +1,16 @@
 """Mantener el diseño: the Spanish written over the original pages by `pdf2zh-next`, for pages with text (#13)."""
 
+import multiprocessing
 import sys
 import threading
 import time
 
+import psutil
 import pymupdf
 
 from aldi.estimate import estimate
 from aldi.gemini import MODEL_CHAIN, GeminiTranslator
+from aldi.layout import write_layout_kept
 from aldi.translator import QuotaExhausted
 from conftest import (
     FakeGemini,
@@ -16,6 +19,7 @@ from conftest import (
     build_scanned_pdf,
     quota_error,
     refused,
+    wait_until,
 )
 
 FLASH = MODEL_CHAIN[0]
@@ -172,3 +176,45 @@ def test_any_other_gemini_error_in_mantener_el_diseno_fails_the_job_and_reports_
     assert not (documents_dir / "Aldi" / "Esmalte" / "Esmalte (es, diseño).pdf").exists()
     [report] = github.reports()
     assert "Output Mode: Layout-kept Translation" in report["body"]
+
+
+def lay_out_in_an_app(source, folder, pids):
+    """The app's process for the test below: Mantener el diseño whose answers never come; sends BabelDOC's pid."""
+
+    def send_child_pid():
+        while not (children := [c for c in multiprocessing.active_children() if c.name == "aldi-babeldoc"]):
+            time.sleep(0.05)
+        pids.put(children[0].pid)
+
+    threading.Thread(target=send_child_pid, daemon=True).start()
+    write_layout_kept(source, range(1, 11), folder, lambda _prompt: threading.Event().wait(), lambda: False)
+
+
+def test_babeldocs_process_ends_when_the_app_is_killed(tmp_path):
+    # Bug: a hard kill of the app left BabelDOC's process laying out, its memory held, with nobody to answer it.
+    (folder := tmp_path / "layout").mkdir()
+    context = multiprocessing.get_context("spawn")
+    pids = context.Queue()
+    pages = [[f"Page {number} describes the enamel of the first molar."] for number in range(1, 11)]
+    source = build_born_digital_pdf(tmp_path / "Esmalte.pdf", pages)
+    app = context.Process(target=lay_out_in_an_app, args=(source, folder, pids))
+    app.start()
+    babeldoc = psutil.Process(pids.get(timeout=60))
+    # Started: BabelDOC is at work, not reading the app's pipe.
+    wait_until(lambda: (folder / "work").exists(), timeout=120)
+
+    app.kill()
+    app.join()
+
+    # Laying out ten pages takes BabelDOC far longer than this.
+    deadline = time.monotonic() + 5
+    while time.monotonic() < deadline:
+        try:
+            if babeldoc.status() == psutil.STATUS_ZOMBIE:
+                break
+        except psutil.NoSuchProcess:
+            break
+        time.sleep(0.1)
+    else:
+        babeldoc.kill()
+        raise AssertionError("BabelDOC's process outlived the app")

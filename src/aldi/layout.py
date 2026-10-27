@@ -8,6 +8,7 @@ request of the app. The child exits after each run, and the memory BabelDOC keep
 import hashlib
 import json
 import multiprocessing
+import os
 import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
@@ -85,10 +86,18 @@ def write_layout_kept(
 
 
 def _run_child(*args) -> None:
+    threading.Thread(target=_end_with_the_app, daemon=True, name="aldi-app-watch").start()
     # Imported in the child only: the app's own process never loads BabelDOC.
     from aldi import layout_child
 
     layout_child.run(*args)
+
+
+def _end_with_the_app() -> None:
+    """Ends BabelDOC's process as soon as the app's is gone, killed or crashed: BabelDOC reads the pipe only when it
+    has a prompt, and lays pages out for minutes before its first."""
+    multiprocessing.parent_process().join()
+    os._exit(1)
 
 
 class _KeptAnswers:
