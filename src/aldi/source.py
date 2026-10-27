@@ -38,7 +38,7 @@ _REFERENCES_TITLE = re.compile(
 )
 _PAGE_NUMBER = re.compile(r"[\divxlc]+", re.IGNORECASE)
 # A list item's printed marker: a bullet, or an enumerator such as `1.`, `1)`, `a)`, `(1)` or `ii.`.
-_LIST_MARKER = re.compile(r"(?:[•◦▪–-]|\d{1,3}[.)]|[a-z]\)|\(\d{1,3}\)|[ivx]{1,4}\.)\s+")
+_LIST_MARKER = re.compile(r"(?:[•◦▪]|\d{1,3}[.)]|[a-z]\)|\(\d{1,3}\)|[ivx]{1,4}\.)\s+")
 _TYPST_IMAGES = {"png", "jpeg", "jpg", "gif"}
 # A scan is rarely sharper than this: higher only makes the images Gemini reads and the crops larger.
 _DPI = 150
@@ -46,6 +46,12 @@ _DPI = 150
 _FIGURE_SIDE = 50
 # A drawing that frames more text than this is a box around a passage, not a Figure with labels.
 _FIGURE_TEXT = 200
+# A text block of this many words ending like a sentence is prose, not a Figure's label.
+_SENTENCE_WORDS = 4
+# Rectangles this many or more, none framing the rest, are a drawing's shapes (a bar chart), not its frame.
+_FIGURE_SHAPES = 3
+# A path at least this share of its cluster's width and height frames it (a border, a shading).
+_FRAME = 0.9
 # A drawing this close to the page's size is its border.
 _PAGE_BORDER = 0.95
 
@@ -116,15 +122,19 @@ def _read_items(page: pymupdf.Page, folder: Path) -> list[_Item]:
     blocks = page.get_text("dict", flags=_TEXT_FLAGS)["blocks"]
     # Text printed over a Figure (its labels and arrows) is part of it, and a table's text is in its cells.
     taken = [pymupdf.Rect(table.bbox) for table in tables]
-    taken += [pymupdf.Rect(block["bbox"]) for block in blocks if block["type"] == 1]
-    for number, rect in enumerate(_drawn_figures(page, blocks, taken), start=1):
+    drawn = _drawn_figures(page, blocks, taken)
+    for number, rect in enumerate(drawn, start=1):
         image = _save_drawing(page, rect, folder / "figures" / f"{page.number + 1:04d}-d{number}.png")
         items.append(_Item(rect, page.rect, Block(Kind.FIGURE, image=image, box=_normalized(rect, page.rect))))
-        taken.append(rect)
+    taken += drawn
     figures = 0
     for block in blocks:
         rect = pymupdf.Rect(block["bbox"])
         if block["type"] == 1:
+            if any(other.intersects(rect) for other in drawn):
+                # The drawing around it took it in.
+                continue
+            taken.append(rect)
             figures += 1
             image = _save_image(block, folder / "figures" / f"{page.number + 1:04d}-{figures}")
             items.append(_Item(rect, page.rect, Block(Kind.FIGURE, image=image, box=_normalized(rect, page.rect))))
@@ -142,21 +152,55 @@ def _read_items(page: pymupdf.Page, folder: Path) -> list[_Item]:
     return _reading_order(items, page.rect.width)
 
 
-def _drawn_figures(page: pymupdf.Page, blocks: list[dict], taken: list[pymupdf.Rect]) -> list[pymupdf.Rect]:
+def _drawn_figures(page: pymupdf.Page, blocks: list[dict], tables: list[pymupdf.Rect]) -> list[pymupdf.Rect]:
     """Where the page draws a Figure in vectors (a diagram or a chart): a cluster of drawings large enough, not a
-    table nor an image, and holding no more text than a Figure's labels. Each box takes in its stroke's edge."""
-    figures = []
-    for cluster in page.cluster_drawings():
+    table, drawing more than a frame around its text, and holding no more text than a Figure's labels. A cluster
+    over a bitmap takes the bitmap in: arrows and labels drawn on a photo are one Figure with it. Each box takes in
+    its stroke's edge."""
+    images = [pymupdf.Rect(block["bbox"]) for block in blocks if block["type"] == 1]
+    drawings = page.get_drawings()
+    figures: list[pymupdf.Rect] = []
+    for cluster in page.cluster_drawings(drawings=drawings):
         rect = (cluster + (-2, -2, 2, 2)) & page.rect
-        if min(rect.width, rect.height) < _FIGURE_SIDE or any(rect.intersects(other) for other in taken):
+        if any(rect.intersects(table) for table in tables):
             continue
         if rect.width >= page.rect.width * _PAGE_BORDER and rect.height >= page.rect.height * _PAGE_BORDER:
             continue
-        inside = [block for block in blocks if block["type"] == 0 and rect.contains(_centre(block))]
-        text = "".join(span["text"] for block in inside for line in block["lines"] for span in line["spans"])
-        if len(text.strip()) <= _FIGURE_TEXT:
-            figures.append(rect)
-    return figures
+        over = [image for image in images if rect.intersects(image)]
+        if not over and min(rect.width, rect.height) < _FIGURE_SIDE:
+            continue
+        if not _draws_shapes([drawing for drawing in drawings if rect.contains(drawing["rect"])], cluster):
+            continue
+        for image in over:
+            rect |= image
+        for other in [other for other in figures if other.intersects(rect)]:
+            figures.remove(other)
+            rect |= other
+        figures.append(rect)
+    return [rect for rect in figures if _holds_labels(blocks, rect)]
+
+
+def _draws_shapes(paths: list[dict], cluster: pymupdf.Rect) -> bool:
+    """Whether a cluster's paths draw more than a frame around its text: a line or a curve, or several rectangles,
+    besides the paths that border or shade the whole cluster."""
+    shapes = [
+        path
+        for path in paths
+        if path["rect"].width < cluster.width * _FRAME or path["rect"].height < cluster.height * _FRAME
+    ]
+    rectangles = [path for path in shapes if all(item[0] in ("re", "qu") for item in path["items"])]
+    return len(shapes) > len(rectangles) or len(rectangles) >= _FIGURE_SHAPES
+
+
+def _holds_labels(blocks: list[dict], rect: pymupdf.Rect) -> bool:
+    """Whether the text inside `rect` reads as a Figure's labels: short, and no sentence among it."""
+    inside = [
+        " ".join(span["text"] for line in block["lines"] for span in line["spans"]).strip()
+        for block in blocks
+        if block["type"] == 0 and rect.contains(_centre(block))
+    ]
+    sentence = any(len(text.split()) >= _SENTENCE_WORDS and text.endswith((".", "!", "?")) for text in inside)
+    return sum(len(text) for text in inside) <= _FIGURE_TEXT and not sentence
 
 
 def _centre(block: dict) -> pymupdf.Point:

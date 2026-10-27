@@ -1,5 +1,6 @@
 """A Born-digital PDF's Reading Version keeps its figures, tables, emphasis and references (#5)."""
 
+import json
 import re
 import zipfile
 
@@ -195,7 +196,7 @@ def docx_paragraphs(path):
 
 def test_a_list_stays_a_list_without_its_printed_markers(app, documents_dir, tmp_path):
     # Bug: every text block became a paragraph, so a list arrived as paragraphs starting with `•` or `1.`.
-    items = ["• Brush twice a day.", "– Use fluoride toothpaste.", "1. Floss every night.", "a) Rinse after meals."]
+    items = ["• Brush twice a day.", "▪ Use fluoride toothpaste.", "1. Floss every night.", "a) Rinse after meals."]
     items += ["(2) Visit the dentist.", "ii. Replace the brush."]
     document = pymupdf.open()
     paragraphs = ["Oral hygiene starts at home.", *items]
@@ -232,6 +233,20 @@ def test_a_paragraph_that_starts_like_a_list_marker_stays_a_paragraph(app, trans
     for paragraph in spanish.values():
         assert paragraphs[paragraph] is False
         assert paragraph in text
+
+
+def test_a_line_of_dialogue_keeps_its_dash_and_stays_a_paragraph(app, documents_dir, tmp_path):
+    # Bug: `–` and `-` counted as list markers, so a Portuguese book's dialogue became bullets without its dashes.
+    document = pymupdf.open()
+    html = "<p>– Olá, doutora.</p><p>- Bom dia.</p>"
+    document.new_page().insert_htmlbox(pymupdf.Rect(50, 60, 545, 750), html, css="* {margin: 0 0 8pt 0;}")
+    document.save(source := tmp_path / "Diálogo.pdf")
+
+    app.wait_for(app.upload(source)["id"])
+
+    paragraphs = dict(docx_paragraphs(documents_dir / "Aldi" / "Diálogo" / "Diálogo (es).docx"))
+    assert paragraphs["ES: – Olá, doutora."] is False
+    assert paragraphs["ES: - Bom dia."] is False
 
 
 DIAGRAM_LABEL = "Pulp chamber"
@@ -275,3 +290,51 @@ def test_a_drawn_diagram_comes_out_as_one_image_with_its_caption_and_label(app, 
     assert "ES: Figure 2. Diagram of a molar." in text
     assert text.index("ES: The diagram shows") < text.index("ES: Figure 2.") < text.index("ES: Tooth")
     assert not any(DIAGRAM_LABEL in sent for request in translator.requests for sent in request)
+
+
+@pytest.mark.parametrize("box", [{"fill": (0.85, 0.9, 0.95), "color": None}, {"color": (0, 0, 0), "width": 1}])
+def test_a_short_passage_in_a_box_is_translated_as_text(app, translator, documents_dir, tmp_path, box):
+    # Bug: any drawing 50 pt across around 200 characters or fewer was a Figure, so a callout became an untranslated
+    # image.
+    document = pymupdf.open()
+    page = document.new_page()
+    page.insert_text((50, 60), "Fluoride protects the enamel.", fontsize=11)
+    page.draw_rect(pymupdf.Rect(50, 90, 545, 160), **box)
+    page.insert_text((62, 125), "Note: brush twice a day.", fontsize=11)
+    document.save(source := tmp_path / "Nota.pdf")
+
+    app.wait_for(app.upload(source)["id"])
+
+    docx = documents_dir / "Aldi" / "Nota" / "Nota (es).docx"
+    assert not [name for name in zipfile.ZipFile(docx).namelist() if name.startswith("word/media/")]
+    assert "ES: Note: brush twice a day." in docx_text(docx)
+
+
+PHOTO_LABEL = "Enamel"
+
+
+def test_arrows_drawn_around_a_photo_come_out_with_it_as_one_image(app, translator, documents_dir, tmp_path):
+    # Bug: a drawing overlapping a bitmap was dropped, so only the photo was kept and its arrows were lost.
+    document = pymupdf.open()
+    page = document.new_page()
+    page.insert_text((50, 60), "The photo shows a molar.", fontsize=11)
+    photo = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 60, 60), False)
+    photo.set_rect(photo.irect, (200, 120, 90))
+    page.insert_image(pymupdf.Rect(200, 100, 350, 250), pixmap=photo)
+    for tail, head in (((80, 120), (230, 160)), ((480, 230), (320, 200))):
+        page.draw_line(tail, head, color=(0, 0, 0), width=1.5)
+        page.draw_polyline([(head[0] - 6, head[1] - 6), head, (head[0] - 6, head[1] + 6)], color=(0, 0, 0))
+    page.insert_text((90, 140), PHOTO_LABEL, fontsize=8)
+    page.insert_text((50, 300), "The arrows point at the enamel.", fontsize=11)
+    document.save(source := tmp_path / "Foto.pdf")
+
+    job = app.wait_for(app.upload(source)["id"])
+
+    docx = documents_dir / "Aldi" / "Foto" / "Foto (es).docx"
+    assert len([name for name in zipfile.ZipFile(docx).namelist() if name.startswith("word/media/")]) == 1
+    blocks = json.loads((tmp_path / "data" / "jobs" / job["id"] / "pages" / "0001.json").read_text("utf-8"))["blocks"]
+    (figure,) = [block for block in blocks if block["kind"] == "figure"]
+    # In points, give or take the rounding of a box normalized to 0-1000.
+    x0, y0, x1, y1 = (value * length / 1000 for value, length in zip(figure["box"], [*page.rect.br] * 2, strict=True))
+    assert x0 <= 81 and y0 <= 101 and x1 >= 479 and y1 >= 249
+    assert not any(PHOTO_LABEL in sent for request in translator.requests for sent in request)
