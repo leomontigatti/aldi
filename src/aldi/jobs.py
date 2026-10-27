@@ -9,6 +9,8 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from aldi.blocks import Block
+from aldi.reading import translate_page
 from aldi.results import deliver, document_name
 from aldi.source import SourcePage, read_pages, render_page
 from aldi.translator import Offline, QuotaExhausted, Translator
@@ -106,7 +108,7 @@ class JobStore:
     def _run(self, job_id: str) -> None:
         folder = self._folder(job_id)
         try:
-            source = read_pages(folder / "source.pdf")
+            source = read_pages(folder / "source.pdf", folder)
             self._update(job_id, state="running", pages=len(source))
             terms: dict[str, str] = {}
             translated = []
@@ -126,7 +128,8 @@ class JobStore:
                     failed.append(page.number)
                     translated.append(TranslatedPage(page.number, [], failed_image=image))
                 else:
-                    translated.append(TranslatedPage(page.number, saved["spanish"]))
+                    blocks = [Block.from_dict(block) for block in saved["blocks"]]
+                    translated.append(TranslatedPage(page.number, blocks))
                 self._update(job_id, page=len(translated))
             job = self.get(job_id)
             stem = f"{job.name} (es)"
@@ -152,19 +155,17 @@ class JobStore:
 
     def _translate(self, page: SourcePage, terms: dict[str, str]) -> dict:
         """What a page's `pages/NNNN.json` holds once it is done, Failed Page or not."""
-        if not page.texts:
-            return {"source": [], "spanish": [], "terms": terms}
         for _ in range(_ATTEMPTS):
             try:
-                answer = self._translator.translate_texts(page.texts, terms)
+                spanish, after = translate_page(page, self._translator, terms)
             except (QuotaExhausted, Offline):
                 # Neither is the page's fault: the Job waits and asks again, and the page is not Failed.
                 raise
             except Exception:
                 error = traceback.format_exc()
                 continue
-            return {"source": page.texts, "spanish": answer.texts, "terms": answer.terms}
-        return {"source": page.texts, "failed": True, "error": error, "terms": terms}
+            return {"blocks": [asdict(block) for block in spanish.blocks], "terms": after}
+        return {"failed": True, "error": error, "terms": terms}
 
     def open_folder(self, job_id: str) -> bool:
         """Shows a finished Job's results folder; False when there is no such folder yet."""
