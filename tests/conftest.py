@@ -88,6 +88,16 @@ def build_scanned_pdf(path: Path, pages: Sequence[Sequence[tuple[tuple[int, int,
     return path
 
 
+def build_mixed_pdf(path: Path, parts: Sequence[Path]) -> Path:
+    """A PDF of the pages of the PDFs at `parts`, one after another: born-digital and scanned ones make it mixed."""
+    document = pymupdf.open()
+    for part in parts:
+        with pymupdf.open(part) as pages:
+            document.insert_pdf(pages)
+    document.save(path)
+    return path
+
+
 ARTICLE_HEADER = "Journal of Oral Science 2026; 12:"
 ARTICLE_FIGURE_COLOR = (0x2E, 0x8B, 0x57)
 ARTICLE_FIGURE_LABEL = "Occlusal lesion"
