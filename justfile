@@ -20,10 +20,15 @@ setup:
 lock:
     uv lock
     uv sync --locked
+    just constraints
+
+# Export uv.lock's pins for the install line, which installs Aldi as a uv tool under them
+constraints:
+    uv export --quiet --locked --no-default-groups --no-hashes --no-emit-project --no-annotate --format requirements.txt -o install-constraints.txt
 
 # The app on a free localhost port, without the native window; jobs, results and settings under this worktree's jobs/
 dev:
-    uv run --locked python -m aldi --data-dir jobs --documents-dir jobs/Documentos --config-dir jobs/config
+    uv run --locked python -m aldi --no-window --data-dir jobs --documents-dir jobs/Documentos --config-dir jobs/config
 
 # A two-page Born-digital PDF built like the tests' ones, to drive `dev` without her documents
 test-pdf path="jobs/prueba.pdf":
@@ -54,6 +59,21 @@ gate:
     [[ $fail == 0 ]] && echo "lint: PASS" || echo "lint: FAIL (files may have been auto-fixed; rerun)"
     uv run --locked pytest -q || fail=1
     [[ $fail == 0 ]] && echo "gate: PASS" || { echo "gate: FAIL"; exit 1; }
+
+# install.sh on this checkout instead of a Release, into a throwaway folder, as CI's install job does. Linux only:
+# elsewhere `aldi setup` would overwrite this machine's own reporting token and launcher.
+install-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    [[ $(uname -s) == Linux ]] || { echo "install-check runs on Linux only"; exit 1; }
+    home=$(mktemp -d)
+    trap 'rm -rf "$home"' EXIT
+    export ALDI_SOURCE=$PWD ALDI_REPORT_TOKEN=not-a-token UV_TOOL_DIR=$home/tools UV_TOOL_BIN_DIR=$home/bin
+    export XDG_CONFIG_HOME=$home/config XDG_DATA_HOME=$home/data
+    sh install.sh
+    "$home/bin/aldi" --help >/dev/null
+    grep -q not-a-token "$home/config/Aldi/settings.json"
+    echo "install-check: PASS"
 
 # Check a PR title the way CI does (Conventional Commit; it becomes the squash commit subject)
 pr-title title:

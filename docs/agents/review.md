@@ -24,7 +24,7 @@ full laptop: ^(install\.(ps1|sh)|src/aldi/(install|update|launcher)|scripts/inst
 full key: ^(\.gitignore|t3\.json|src/aldi/(settings|config|keys?|gemini)\b)
 full report: ^src/aldi/(reports?|reporting|errors?)\b
 full files: ^src/aldi/results\b
-full pins: ^(pyproject\.toml|uv\.lock)$
+full pins: ^(pyproject\.toml|uv\.lock|install-constraints\.txt)$
 quiet: ^\.pre-commit-config\.yaml$
 quiet: ^\.github/dependabot\.yml$
 quiet: ^\.env\.example$

@@ -28,6 +28,7 @@ class FakeTranslator:
     """Stands in for Gemini at the translator seam: each text comes back prefixed with `ES:`.
 
     A page image is read as the blocks `scanned` holds for its page number, or else as one paragraph `ES: Page N`.
+    Reading it adds the terms `scanned_terms` holds for its page number to the Term List it answers.
     """
 
     def __init__(self):
@@ -35,6 +36,9 @@ class FakeTranslator:
         self.batches: list[list[int]] = []
         """The page numbers of each Page Batch asked for, in order."""
         self.scanned: dict[int, list[dict]] = {}
+        self.scanned_terms: dict[int, dict[str, str]] = {}
+        self.terms_given: list[dict[str, str]] = []
+        """The Term List each Page Batch was sent with, in order."""
 
     def translate_texts(self, texts: Sequence[str], terms: Mapping[str, str]) -> TextTranslation:
         self.requests.append(list(texts))
@@ -42,11 +46,15 @@ class FakeTranslator:
 
     def read_page_batch(self, pages: Sequence[tuple[int, bytes]], terms: Mapping[str, str]) -> str:
         self.batches.append([number for number, _image in pages])
+        self.terms_given.append(dict(terms))
         assert all(image.startswith(b"\x89PNG") for _number, image in pages)
+        added = {}
+        for number, _image in pages:
+            added |= self.scanned_terms.get(number, {})
         return json.dumps(
             {
                 "pages": [{"page": number, "blocks": self.page_blocks(number)} for number, _image in pages],
-                "terms": [{"original": original, "spanish": spanish} for original, spanish in terms.items()],
+                "terms": [{"original": original, "spanish": spanish} for original, spanish in added.items()],
             }
         )
 

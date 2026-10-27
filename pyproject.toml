@@ -12,6 +12,7 @@ dependencies = [
     # pdf2zh-next 2.9.0 (Mantener el diseño) requires pymupdf<1.25.3: pinned now so that ticket adds no downgrade.
     "pymupdf<1.25.3",
     "pypandoc-binary>=1.13",
+    "pywebview>=6.0",
     "typst>=0.13",
 ]
 
