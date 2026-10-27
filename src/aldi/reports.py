@@ -27,7 +27,7 @@ from typing import Protocol
 from google.genai import errors as genai_errors
 
 import aldi
-from aldi.gemini import MODEL
+from aldi.gemini import MODEL_CHAIN
 from aldi.translator import Offline, QuotaExhausted
 
 SENT = "Algo salió mal. Ya se envió un informe para que lo arreglen."
@@ -340,7 +340,7 @@ def _body(problem: str, details: ErrorDetails, context: Context) -> str:
         f"- Output Mode: {context.output_mode}\n"
         f"- Document: {context.document_kind}, {context.pages} pages\n"
         f"- Failed pages: {failed}\n"
-        f"- Gemini model: {MODEL}\n"
+        f"- Gemini model: {', '.join(MODEL_CHAIN)} (the Model Chain)\n"
         f"- Gemini error: {details.gemini_error or 'none'}\n\n"
         f"```text\n{details.trace}\n```\n\n"
         f"{_marker(details.fingerprint)}\n"

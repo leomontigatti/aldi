@@ -8,6 +8,7 @@ from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import TypeVar
 
 from aldi import reports
 from aldi.blocks import Block
@@ -20,6 +21,17 @@ from aldi.writer import TranslatedPage, write_reading_version
 
 # A page gets two retries before it becomes a Failed Page.
 _ATTEMPTS = 3
+QUOTA_PAUSE_NOTICE = "En pausa hasta que Gemini vuelva a estar disponible"
+OFFLINE_NOTICE = "Sin conexión a internet"
+# Seconds before a paused Job asks Gemini again: a per-minute quota is back by then, a daily one costs a few 429s.
+QUOTA_PAUSE = 5 * 60
+OFFLINE_WAIT = 30
+
+_Answer = TypeVar("_Answer")
+
+
+class _Closing(Exception):
+    """The app is closing while a Job waits: it stops where it is, its finished pages kept."""
 
 
 @dataclass
@@ -27,7 +39,7 @@ class Job:
     id: str
     name: str
     state: str = "queued"
-    """queued, running, done or failed."""
+    """queued, running, paused, done or failed."""
     page: int = 0
     """How many pages are translated so far."""
     pages: int = 0
@@ -40,7 +52,8 @@ class Job:
     failed_pages: list[int] = field(default_factory=list)
     """The Failed Pages of a finished Job, by their number in the original."""
     notice: str = ""
-    """The Spanish line the UI shows under the Job's state besides the progress, such as an Error Report's."""
+    """The Spanish line the UI shows under the Job's state besides the progress, such as why it is paused or an
+    Error Report's."""
 
 
 class JobStore:
@@ -57,6 +70,7 @@ class JobStore:
         translator: Translator,
         open_folder: Callable[[Path], None],
         reporter: Reporter,
+        sleep: Callable[[float], None] | None = None,
     ):
         self._jobs_dir = data_dir / "jobs"
         self._documents_dir = documents_dir
@@ -65,6 +79,7 @@ class JobStore:
         self._reporter = reporter
         self._lock = threading.Lock()
         self._closing = threading.Event()
+        self._sleep = sleep or self._closing.wait
         self._jobs: dict[str, Job] = {}
         # One Job at a time: they would otherwise compete for the same free quota.
         self._worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="aldi-job")
@@ -133,7 +148,9 @@ class JobStore:
                         return
                     batch = _page_batch(source[index:], folder) if page.scanned else [page]
                     answers = (
-                        self._read_scanned(batch, folder, terms) if page.scanned else [self._translate(page, terms)]
+                        self._read_scanned(job_id, batch, folder, terms)
+                        if page.scanned
+                        else [self._translate(job_id, page, terms)]
                     )
                     for batch_page, answer in zip(batch, answers, strict=True):
                         _page_file(folder, batch_page.number).write_text(
@@ -157,6 +174,8 @@ class JobStore:
             results = write_reading_version(translated, folder, stem)
             # A retry of the Failed Pages lands beside the first results, numbered: she may have edited those.
             delivered = [deliver(result, self._documents_dir, job.name, f"{stem}{result.suffix}") for result in results]
+        except _Closing:
+            return
         except Exception as error:
             (folder / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
             notice = self._report(problem, reports.describe(error), source, []) if reports.is_bug(error) else ""
@@ -177,13 +196,12 @@ class JobStore:
             # Her files are written and listed; a file browser that did not open is no reason to fail the Job.
             (folder / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
 
-    def _translate(self, page: SourcePage, terms: dict[str, str]) -> dict:
+    def _translate(self, job_id: str, page: SourcePage, terms: dict[str, str]) -> dict:
         """What a page's `pages/NNNN.json` holds once it is done, Failed Page or not."""
         for _ in range(_ATTEMPTS):
             try:
-                spanish, after = translate_page(page, self._translator, terms)
-            except (QuotaExhausted, Offline):
-                # Neither is the page's fault: the Job waits and asks again, and the page is not Failed.
+                spanish, after = self._ask(job_id, lambda: translate_page(page, self._translator, terms))
+            except _Closing:
                 raise
             except Exception as exception:
                 last = exception
@@ -191,12 +209,16 @@ class JobStore:
             return {"blocks": [asdict(block) for block in spanish.blocks], "terms": after}
         return _failed_page(last, terms)
 
-    def _read_scanned(self, pages: Sequence[SourcePage], folder: Path, terms: dict[str, str]) -> Sequence[dict]:
+    def _read_scanned(
+        self, job_id: str, pages: Sequence[SourcePage], folder: Path, terms: dict[str, str]
+    ) -> Sequence[dict]:
         """What each scanned page's `pages/NNNN.json` holds once it is done, Failed Page or not."""
         for _ in range(_ATTEMPTS if len(pages) == 1 else 1):
             try:
-                translated, after = read_page_batch(pages, folder / "source.pdf", folder, self._translator, terms)
-            except (QuotaExhausted, Offline):
+                translated, after = self._ask(
+                    job_id, lambda: read_page_batch(pages, folder / "source.pdf", folder, self._translator, terms)
+                )
+            except _Closing:
                 raise
             except Exception as exception:
                 last = exception
@@ -207,7 +229,7 @@ class JobStore:
         # A Page Batch that failed is read again a page at a time: alone, a page cannot go missing or be merged.
         answers = []
         for page in pages:
-            answers += self._read_scanned([page], folder, terms)
+            answers += self._read_scanned(job_id, [page], folder, terms)
             terms = answers[-1]["terms"]
         return answers
 
@@ -224,6 +246,27 @@ class JobStore:
             kind = "mixed" if with_text else "scanned"
         sent = self._reporter.report(problem, details, Context("Reading Version", kind, len(source), list(failed)))
         return reports.SENT if sent else reports.QUEUED
+
+    def _ask(self, job_id: str, request: Callable[[], _Answer]) -> _Answer:
+        """The request's answer, waiting out a Quota Pause or a lost connection as often as it takes: neither is the
+        page's fault, so neither makes it a Failed Page."""
+        while True:
+            try:
+                answer = request()
+            except QuotaExhausted:
+                self._wait(job_id, QUOTA_PAUSE_NOTICE, QUOTA_PAUSE)
+            except Offline:
+                self._wait(job_id, OFFLINE_NOTICE, OFFLINE_WAIT)
+            else:
+                if self.get(job_id).state == "paused":
+                    self._update(job_id, state="running", notice="")
+                return answer
+
+    def _wait(self, job_id: str, notice: str, seconds: float) -> None:
+        self._update(job_id, state="paused", notice=notice)
+        self._sleep(seconds)
+        if self._closing.is_set():
+            raise _Closing
 
     def open_folder(self, job_id: str) -> bool:
         """Shows a finished Job's results folder; False when there is no such folder yet."""

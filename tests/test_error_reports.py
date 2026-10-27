@@ -127,10 +127,11 @@ def test_a_closed_issue_does_not_take_the_repeat(app, translator, github, tmp_pa
 def test_what_is_not_a_bug_is_never_reported(app, translator, github, tmp_path, error):
     failing_always(translator, error)
 
-    job = app.wait_for(app.upload(document(tmp_path))["id"])
+    # A Quota Pause never ends while every model stays out of quota; the others end the Job.
+    job = app.wait_for(app.upload(document(tmp_path))["id"], until=lambda job: job["state"] in ("paused", "done"))
     app.stop()
 
-    assert job["notice"] == ""
+    assert job["notice"] in ("", "En pausa hasta que Gemini vuelva a estar disponible")
     assert github.issues == []
 
 

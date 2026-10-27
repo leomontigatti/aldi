@@ -29,6 +29,11 @@ dev:
 test-pdf path="jobs/prueba.pdf":
     uv run --locked python tests/build_pdf.py {{ quote(path) }}
 
+# Measure the Model Chain on the key in .env (spends real quota): `models`, `page`, `variants`, `burst` (each takes a model)
+[positional-arguments]
+gemini-measure *args:
+    uv run --locked python scripts/measure_gemini.py "$@"
+
 # All linters and formatters on every file (fixes what it can; rerun to confirm)
 lint:
     uv run pre-commit run --all-files --show-diff-on-failure

@@ -1,15 +1,19 @@
-"""Test support: the fake translator and GitHub, the builders of test PDFs, and the app running on a free port."""
+"""Test support: the fakes at the seams (translator, Gemini's client, the clock, GitHub), the builders of test PDFs,
+and the app running on a free port."""
 
 import json
 import threading
 import time
 import urllib.parse
 import urllib.request
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from pathlib import Path
+from types import SimpleNamespace
 
+import httpx
 import pymupdf
 import pytest
+from google.genai import errors
 
 from aldi.app import create_server
 from aldi.reports import GitHubUnavailable, Issue
@@ -86,6 +90,83 @@ def build_scanned_pdf(path: Path, pages: Sequence[Sequence[tuple[tuple[int, int,
         page.insert_image(page.rect, stream=image.tobytes("png"))
     document.save(path)
     return path
+
+
+class FakeGemini:
+    """Stands in for google-genai's client: every model answers each block prefixed with `ES:`, and each page of a Page
+    Batch as one paragraph `ES: Page N`, unless `fail` scripted an error for that model's next request. A Gemma model
+    answers 500 to a response schema, as Gemma does."""
+
+    def __init__(self):
+        self.models = self
+        self.calls: list[str] = []
+        """The model each request went to, in order."""
+        self._script: dict[str, list[Exception | None]] = {}
+
+    def fail(self, model: str, *failures: Exception, after: int = 0) -> None:
+        """The model's requests after its next `after` answers raise `failures`, one each."""
+        self._script[model] = [None] * after + list(failures)
+
+    def generate_content(self, *, model, contents, config):
+        self.calls.append(model)
+        script = self._script.get(model)
+        if script and (failure := script.pop(0)):
+            raise failure
+        if model.startswith("gemma") and config.response_schema:
+            raise errors.ServerError(500, {"error": {"code": 500, "status": "INTERNAL"}})
+        if isinstance(contents, list):
+            # A Page Batch: each image follows its `Page N` line, and is read as one paragraph `ES: Page N`.
+            numbers = [
+                int(part.text.removeprefix("Page ")) for part in contents if (part.text or "").startswith("Page ")
+            ]
+            pages = [{"page": n, "blocks": [{"kind": "paragraph", "text": f"ES: Page {n}"}]} for n in numbers]
+            return SimpleNamespace(text=json.dumps({"pages": pages, "terms": []}))
+        blocks = json.loads(contents)["blocks"]
+        return SimpleNamespace(text=json.dumps({"spanish": [f"ES: {block}" for block in blocks], "terms": []}))
+
+
+def quota_error(retry_delay: str | None = None) -> errors.APIError:
+    """A 429 as Gemini sends it, with its `RetryInfo` when `retry_delay` (`"38s"`) is given."""
+    details = [{"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": retry_delay}] if retry_delay else []
+    error = {"code": 429, "status": "RESOURCE_EXHAUSTED", "message": "Quota", "details": details}
+    return errors.ClientError(429, {"error": error})
+
+
+def busy_error() -> errors.APIError:
+    return errors.ServerError(503, {"error": {"code": 503, "status": "UNAVAILABLE", "message": "Overloaded"}})
+
+
+def offline_error() -> httpx.ConnectError:
+    return httpx.ConnectError("[Errno -3] Temporary failure in name resolution")
+
+
+class FakeClock:
+    """Stands in for the clock and every wait (`time.monotonic`, `time.sleep`): a wait is recorded and moves `now`
+    on at once, or, after `hold`, blocks the waiting thread until `release` so a test can see the Job while it waits."""
+
+    def __init__(self):
+        self.waits: list[float] = []
+        self._now = 0.0
+        self._held: threading.Event | None = None
+
+    def now(self) -> float:
+        return self._now
+
+    def advance(self, seconds: float) -> None:
+        self._now += seconds
+
+    def sleep(self, seconds: float) -> None:
+        self.waits.append(seconds)
+        self._now += seconds
+        if held := self._held:
+            held.wait(timeout=30)
+
+    def hold(self) -> None:
+        self._held = threading.Event()
+
+    def release(self) -> None:
+        held, self._held = self._held, None
+        held.set()
 
 
 ARTICLE_HEADER = "Journal of Oral Science 2026; 12:"
@@ -254,11 +335,12 @@ class RunningApp:
             time.sleep(0.05)
         raise AssertionError(f"job {job_id} did not reach page {page}: {job}")
 
-    def wait_for(self, job_id: str, timeout: float = 60) -> dict:
+    def wait_for(self, job_id: str, timeout: float = 60, until: Callable[[dict], bool] | None = None) -> dict:
+        """The Job once it is done or failed, or once `until` holds."""
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             job = self.get(f"/api/jobs/{job_id}")
-            if job["state"] in ("done", "failed"):
+            if until(job) if until else job["state"] in ("done", "failed"):
                 return job
             time.sleep(0.05)
         raise AssertionError(f"job {job_id} did not finish: {job}")
@@ -267,6 +349,11 @@ class RunningApp:
 @pytest.fixture
 def translator():
     return FakeTranslator()
+
+
+@pytest.fixture
+def clock():
+    return FakeClock()
 
 
 @pytest.fixture
@@ -306,7 +393,7 @@ def opened():
 
 
 @pytest.fixture
-def start_app(tmp_path, documents_dir, settings, key_check, translator_keys, opened, github):
+def start_app(tmp_path, documents_dir, settings, key_check, translator_keys, opened, github, clock):
     """Starts the app on this test's data and Documents folders; each call is a fresh start of the same install.
 
     Each translator the app builds is the given fake, whatever the key.
@@ -329,6 +416,7 @@ def start_app(tmp_path, documents_dir, settings, key_check, translator_keys, ope
             report_interval=0.05,
             host="127.0.0.1",
             port=0,
+            sleep=clock.sleep,
         )
         running.append(RunningApp(server))
         return running[-1]
