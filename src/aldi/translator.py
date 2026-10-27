@@ -20,3 +20,11 @@ class Translator(Protocol):
         Each text is inline Markdown (`aldi.blocks.Block.text`); its Spanish keeps the same emphasis and escapes.
         """
         ...
+
+
+class QuotaExhausted(Exception):
+    """No model in the Model Chain takes a request now: each is out of quota, or stays busy. A Quota Pause."""
+
+
+class Offline(Exception):
+    """Gemini cannot be reached: no internet connection."""

@@ -26,10 +26,15 @@ _MARKDOWN_SPECIALS = re.compile(r"([`_{}\[\]<>#+\-!|~^$])")
 _ORDERED_LIST_START = re.compile(r"^(\d+)([.)])")
 
 
+_FAILED_PAGE = "Esta página no se pudo traducir"
+
+
 @dataclass(frozen=True)
 class TranslatedPage:
     number: int
     blocks: list[Block]
+    failed_image: Path | None = None
+    """For a Failed Page, the original page's image, relative to the folder the Reading Version is written in."""
 
 
 def write_reading_version(pages: Sequence[TranslatedPage], folder: Path, stem: str) -> tuple[Path, Path]:
@@ -51,6 +56,9 @@ def to_markdown(pages: Sequence[TranslatedPage]) -> str:
     paragraphs = []
     for page in pages:
         paragraphs.append(f"*p. {page.number} del original*")
+        if page.failed_image:
+            paragraphs.append(f"![]({page.failed_image.as_posix()}){{width=100%}}")
+            paragraphs.append(f"**{_FAILED_PAGE}**")
         blocks = [block for block in page.blocks if block.kind != Kind.FURNITURE]
         for index, block in enumerate(blocks):
             previous = blocks[index - 1] if index else None

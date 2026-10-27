@@ -42,6 +42,13 @@ def deliver(result: Path, documents_dir: Path, name: str, filename: str) -> Path
     raise FileExistsError(folder / filename)
 
 
+def redeliver(result: Path, target: Path) -> Path:
+    """Copies `result` over `target`, a file this Job delivered before."""
+    target.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(result, target)
+    return target
+
+
 def open_folder(folder: Path) -> None:
     """Shows `folder` in her file browser: Explorer on Windows, Finder on macOS."""
     if sys.platform == "win32":

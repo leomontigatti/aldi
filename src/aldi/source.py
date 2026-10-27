@@ -228,3 +228,9 @@ def _captions_under_figures(blocks: list[Block]) -> list[Block]:
         if blocks[index].kind == Kind.CAPTION and blocks[index + 1].kind == Kind.FIGURE:
             blocks[index], blocks[index + 1] = blocks[index + 1], blocks[index]
     return blocks
+
+
+def render_page(path: Path, number: int, image: Path) -> None:
+    """Writes page `number` (from 1) of the PDF at `path` as a PNG image."""
+    with pymupdf.open(path, filetype="pdf") as document:
+        document[number - 1].get_pixmap(dpi=150).save(image)

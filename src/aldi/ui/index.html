@@ -98,6 +98,17 @@ async function send(pdf) {
   refresh();
 }
 
+async function retry(id) {
+  message.textContent = "";
+  try {
+    const response = await fetch(`/api/jobs/${id}/retry`, { method: "POST" });
+    if (!response.ok) message.textContent = (await response.json()).error;
+  } catch {
+    message.textContent = "No se pudo volver a intentar.";
+  }
+  refresh();
+}
+
 async function openFolder(id) {
   message.textContent = "";
   try {
@@ -111,6 +122,8 @@ async function openFolder(id) {
 function describe(job) {
   if (job.state === "queued") return "En espera";
   if (job.state === "running") return job.pages ? `Traduciendo… Página ${job.page} de ${job.pages}` : "Traduciendo…";
+  if (job.state === "done" && job.failed_pages.length === 1) return "Lista, salvo 1 página que no se pudo traducir";
+  if (job.state === "done" && job.failed_pages.length) return `Lista, salvo ${job.failed_pages.length} páginas que no se pudieron traducir`;
   if (job.state === "done") return "Lista";
   return "Algo salió mal.";
 }
@@ -138,6 +151,14 @@ async function refresh() {
         open.textContent = "Abrir carpeta";
         open.addEventListener("click", () => openFolder(job.id));
         item.append(folder, open);
+        if (job.failed_pages.length) {
+          const again = document.createElement("button");
+          again.type = "button";
+          again.className = "secondary";
+          again.textContent = "Reintentar páginas fallidas";
+          again.addEventListener("click", () => retry(job.id));
+          item.append(" ", again);
+        }
       }
       return item;
     }));
