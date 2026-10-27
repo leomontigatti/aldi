@@ -45,6 +45,11 @@ test-pdf path="jobs/prueba.pdf":
 gemini-measure *args:
     uv run --locked python scripts/measure_gemini.py "$@"
 
+# Peak memory of a test run (Linux): the named files or node ids; stops past ALDI_TEST_MEMORY_LIMIT_MB (4096)
+[positional-arguments]
+test-memory *args:
+    uv run --locked python scripts/test_memory.py "$@"
+
 # All linters and formatters on every file (fixes what it can; rerun to confirm)
 lint:
     uv run pre-commit run --all-files --show-diff-on-failure
