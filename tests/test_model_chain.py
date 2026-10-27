@@ -190,18 +190,24 @@ def test_the_real_client_reports_a_connection_it_cannot_open_as_offline(monkeypa
         closed.bind(("127.0.0.1", 0))
         port = closed.getsockname()[1]
     monkeypatch.setenv("GOOGLE_GEMINI_BASE_URL", f"http://127.0.0.1:{port}")
+    # A developer's own proxy would otherwise take the request somewhere other than that closed port.
+    for name in ("HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY", "http_proxy", "https_proxy", "all_proxy"):
+        monkeypatch.delenv(name, raising=False)
 
     with pytest.raises(Offline):
         GeminiTranslator(make_client("AIza-de-prueba")).translate_texts(["The enamel is hard."], {})
 
 
-def test_the_real_client_goes_through_the_system_proxy(monkeypatch):
-    # Bug: the transport that gives connecting its own timeout made httpx ignore the system proxy, so a laptop that
-    # reaches the internet only through one read as offline.
+@pytest.mark.parametrize("scheme", ["http://", ""])
+def test_the_real_client_goes_through_the_system_proxy(monkeypatch, scheme):
+    # Bug: the transport that gave connecting its own timeout made httpx ignore the system proxy, so a laptop that
+    # reaches the internet only through one read as offline; and a proxy written without `http://` crashed.
+    # Gemini's address never resolves: going around the proxy reaches nothing, not Google.
+    monkeypatch.setenv("GOOGLE_GEMINI_BASE_URL", "https://aldi-test.invalid")
     with socket.socket() as proxy:
         proxy.bind(("127.0.0.1", 0))
         proxy.listen()
-        monkeypatch.setenv("HTTPS_PROXY", f"http://127.0.0.1:{proxy.getsockname()[1]}")
+        monkeypatch.setenv("HTTPS_PROXY", f"{scheme}127.0.0.1:{proxy.getsockname()[1]}")
         monkeypatch.delenv("NO_PROXY", raising=False)
         monkeypatch.delenv("no_proxy", raising=False)
         asked = []
@@ -221,7 +227,7 @@ def test_the_real_client_goes_through_the_system_proxy(monkeypatch):
             )
         listener.join(timeout=10)
 
-    assert asked == [b"CONNECT generativelanguage.googleapis.com:443 HTTP/1.1"]
+    assert asked == [b"CONNECT aldi-test.invalid:443 HTTP/1.1"]
 
 
 def test_another_gemini_error_fails_the_page_without_trying_the_other_models(app, gemini, tmp_path):

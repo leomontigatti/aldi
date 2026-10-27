@@ -2,7 +2,6 @@
 
 import json
 import time
-import urllib.request
 from collections.abc import Callable, Mapping, Sequence
 
 import httpx
@@ -94,23 +93,17 @@ class TranslationError(RuntimeError):
     """Gemini answered, but not with a usable translation."""
 
 
-class _ConnectTimeout(httpx.HTTPTransport):
+def _connect_timeout(request: httpx.Request) -> None:
     """Gives opening the connection its own `CONNECT_TIMEOUT`: google-genai sets one timeout on every phase of a
-    request."""
-
-    def handle_request(self, request: httpx.Request) -> httpx.Response:
-        request.extensions["timeout"] = {**request.extensions.get("timeout", {}), "connect": CONNECT_TIMEOUT}
-        return super().handle_request(request)
+    request. A request hook rather than a transport of our own, which would make httpx skip the system proxy."""
+    request.extensions["timeout"] = {**request.extensions.get("timeout", {}), "connect": CONNECT_TIMEOUT}
 
 
 def make_client(api_key: str) -> genai.Client:
     """Gemini's client for her key, its requests cut after `REQUEST_TIMEOUT`, or `CONNECT_TIMEOUT` while
     connecting."""
-    # A transport of our own makes httpx skip the system proxy, so it is given the one httpx would have found: from
-    # the environment, the Windows registry or macOS's network settings.
-    proxies = urllib.request.getproxies()
-    transport = _ConnectTimeout(proxy=proxies.get("https") or proxies.get("all"))
-    options = types.HttpOptions(timeout=REQUEST_TIMEOUT * 1000, client_args={"transport": transport})
+    hooks = {"request": [_connect_timeout]}
+    options = types.HttpOptions(timeout=REQUEST_TIMEOUT * 1000, client_args={"event_hooks": hooks})
     return genai.Client(api_key=api_key, http_options=options)
 
 
@@ -216,7 +209,8 @@ class GeminiTranslator:
         for wait in (*BUSY_WAITS, None):
             try:
                 return self._client.models.generate_content(model=model, contents=contents, config=config)
-            except (httpx.ConnectError, httpx.ConnectTimeout) as error:
+            except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ProxyError) as error:
+                # A proxy that will not open the way (one asking for a password) leaves her offline as much.
                 raise Offline from error
             except (httpx.TimeoutException, httpx.ReadError, httpx.RemoteProtocolError):
                 # Cut off or kept waiting: Gemini is busy, not out of reach.
