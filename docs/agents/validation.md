@@ -6,7 +6,8 @@ first instead of running an ad-hoc command, so the next run is the same.
 
 ## First time on a machine
 
-`uv run just setup`: tools, the pre-commit hook, `.env` from `.env.example` and an empty `samples/`. Put a
+`uv run just setup`: tools, the pre-commit hook, `.env` from `.env.example`, an empty `samples/`, and BabelDOC's
+assets (`uv run just layout-assets`). Put a
 Gemini key in `.env` and her sample PDFs in `samples/` only when a real-document run is needed.
 
 ## As you go
@@ -26,6 +27,11 @@ may auto-fix files: rerun until it passes.
 The tests never call Gemini or the network: the translator is a seam, and the tests use a fake behind it. They
 build their own small PDFs (born-digital ones with a PDF library, scanned ones as page images) rather than reading
 `samples/`.
+
+One exception: Mantener el diseño's tests run BabelDOC for real, and BabelDOC needs ~345 MB of fonts, a layout model
+and tiktoken's encoding in `~/.cache/babeldoc`. `uv run just layout-assets` downloads them once (`just setup` runs
+it); the tests themselves then stay offline. CI fills the same folder in one step before the tests, kept with
+`actions/cache` while uv.lock keeps the same BabelDOC version.
 
 ## CI
 

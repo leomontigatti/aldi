@@ -10,11 +10,18 @@ import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
+from babeldoc.assets.assets import warmup
 from babeldoc.format.pdf import high_level
 from babeldoc.format.pdf.translation_config import TranslationConfig, WatermarkOutputMode
 from babeldoc.translator.translator import BaseTranslator
 
 from aldi.translator import Offline, QuotaExhausted
+
+
+def fetch_assets() -> None:
+    """Downloads what BabelDOC needs to run, about 345 MB (fonts, its layout model, tiktoken's encoding), into
+    `~/.cache/babeldoc`; files already there and intact are kept. `aldi setup` runs it, so a Job never waits on it."""
+    warmup()
 
 
 class Cancelled(Exception):

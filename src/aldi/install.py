@@ -1,4 +1,5 @@
-"""`aldi setup`, the install line's last step: saves the reporting token and creates the launcher.
+"""`aldi setup`, the install line's last step: saves the reporting token, creates the launcher and downloads what
+Mantener el diseño needs.
 
 `install.ps1` and `install.sh` install `uv` and Aldi, then run this with the token in `ALDI_REPORT_TOKEN`. The
 launcher starts the Python of Aldi's `uv` tool environment, which an update reinstalls in place, so it outlives
@@ -28,13 +29,20 @@ NAME = "Aldi"
 
 
 def setup(
-    token: str, settings: Settings, data_dir: Path, make_github: Callable[[str], GitHub], launcher: Callable[[], list]
+    token: str,
+    settings: Settings,
+    data_dir: Path,
+    make_github: Callable[[str], GitHub],
+    launcher: Callable[[], list],
+    assets: Callable[[], object],
 ) -> bool:
-    """Saves the token and creates the launcher; False, with an Error Report filed or queued, when either fails."""
+    """Saves the token, creates the launcher and downloads the assets; False, with an Error Report filed or queued,
+    when any of them fails."""
     token = token.strip()
     try:
         settings.save_report_token(token)
         launcher()
+        assets()
         return True
     except Exception as error:
         reporter = Reporter(data_dir, lambda: token, make_github, secrets=lambda: [token])
@@ -86,7 +94,14 @@ def main() -> int:
         made.extend(create_launcher(Path(sys.executable), data_dir, system, launcher_folders(system)))
         return made
 
-    if not setup(token, Settings(default_config_dir()), data_dir, GitHubClient, launcher):
+    def assets() -> None:
+        # Here rather than on her first Layout-kept Job, which would otherwise wait on the download.
+        from aldi.layout import fetch_assets
+
+        print("Descargando lo que necesita Mantener el diseño (unos 350 MB)...")
+        fetch_assets()
+
+    if not setup(token, Settings(default_config_dir()), data_dir, GitHubClient, launcher, assets):
         print("No se pudo terminar de instalar Aldi.", file=sys.stderr)
         return 1
     for path in made:

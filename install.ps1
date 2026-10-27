@@ -1,8 +1,9 @@
 # Installs Aldi on Windows, from PowerShell:
 #   powershell -ExecutionPolicy ByPass -c "irm https://github.com/leomontigatti/aldi/releases/latest/download/install.ps1 | iex"
 # It installs uv, then Aldi as a uv tool from the latest Release tag with uv.lock's pins, then `aldi setup` saves
-# the reporting token and creates the shortcuts on the desktop and in the Start menu. A step that fails files an
-# Error Report (ADR 4) that names only the step and the system. Running it again reinstalls the latest Release.
+# the reporting token, creates the shortcuts on the desktop and in the Start menu, and downloads what the Layout-kept
+# Translation needs (~345 MB). A step that fails files an Error Report (ADR 4) that names only the step and the
+# system. Running it again reinstalls the latest Release.
 #
 # ALDI_REPORT_TOKEN skips the question for the token; ALDI_SOURCE, a checkout, is installed instead of the
 # latest Release (CI's test of this script). Run through `iex`, so it never calls `exit`: that would close the

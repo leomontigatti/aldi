@@ -15,6 +15,12 @@ setup:
     uv run pre-commit install --install-hooks
     [ -e .env ] || [ -L .env ] || cp .env.example .env
     [ -e samples ] || [ -L samples ] || mkdir samples
+    {{ just_executable() }} layout-assets
+
+# Download what Mantener el diseño's BabelDOC needs (~345 MB) into ~/.cache/babeldoc, as `aldi setup` does; the
+# tests need it. Keeps the files already there and intact.
+layout-assets:
+    uv run --locked python -c "from aldi.layout import fetch_assets; fetch_assets()"
 
 # Re-resolve uv.lock after a dependency change in pyproject.toml, then sync
 lock:

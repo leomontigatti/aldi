@@ -1,4 +1,5 @@
-"""What the install line does once `uv` has installed Aldi: the reporting token and the launcher (#16)."""
+"""What the install line does once `uv` has installed Aldi: the reporting token, the launcher (#16) and what
+Mantener el diseño downloads (#13)."""
 
 import getpass
 import os
@@ -20,10 +21,17 @@ def test_setup_saves_the_reporting_token_and_creates_the_launcher(tmp_path):
     github = FakeGitHub()
     made = []
 
-    done = setup(f"  {REPORT_TOKEN}\n", settings, tmp_path / "data", github, lambda: made.append("launcher") or [])
+    done = setup(
+        f"  {REPORT_TOKEN}\n",
+        settings,
+        tmp_path / "data",
+        github,
+        lambda: made.append("launcher") or [],
+        lambda: made.append("assets"),
+    )
 
     assert done
-    assert made == ["launcher"]
+    assert made == ["launcher", "assets"]
     assert Settings(tmp_path / "config").report_token == REPORT_TOKEN
     assert github.issues == []
 
@@ -36,7 +44,7 @@ def test_a_failed_install_files_an_error_report_with_nothing_private(tmp_path):
     def launcher():
         raise PermissionError(f"cannot write {desktop} for {getpass.getuser()} with {REPORT_TOKEN}")
 
-    done = setup(REPORT_TOKEN, settings, tmp_path / "data", github, launcher)
+    done = setup(REPORT_TOKEN, settings, tmp_path / "data", github, launcher, lambda: None)
 
     assert not done
     [report] = github.reports()
@@ -56,10 +64,23 @@ def test_a_failed_install_with_no_connection_keeps_the_report_for_the_app_to_sen
     def launcher():
         raise OSError("disk full")
 
-    assert not setup(REPORT_TOKEN, Settings(tmp_path / "config"), tmp_path / "data", github, launcher)
+    assert not setup(REPORT_TOKEN, Settings(tmp_path / "config"), tmp_path / "data", github, launcher, lambda: None)
 
     assert github.issues == []
     assert len(list((tmp_path / "data" / "reports" / "queue").glob("*.json"))) == 1
+
+
+def test_a_failed_download_of_mantener_el_disenos_assets_fails_the_install_with_a_report(tmp_path):
+    github = FakeGitHub()
+
+    def assets():
+        raise RuntimeError("asset coroutine failed: ConnectError: [Errno -3] Temporary failure in name resolution")
+
+    done = setup(REPORT_TOKEN, Settings(tmp_path / "config"), tmp_path / "data", github, lambda: [], assets)
+
+    assert not done
+    [report] = github.reports()
+    assert report["title"].startswith("Error Report: Install failed: RuntimeError")
 
 
 def test_the_macos_launcher_is_an_app_that_starts_aldi_with_its_own_python(tmp_path):

@@ -61,6 +61,17 @@ jobs:
           version: "0.13.0"
           enable-cache: false
       - run: uv sync --locked --no-default-groups --group test
+      # Mantener el diseño's tests run BabelDOC, which needs ~345 MB of fonts and models that `aldi setup` downloads
+      # on her laptop. Kept between runs while uv.lock keeps the same BabelDOC.
+      - name: BabelDOC's version
+        id: babeldoc
+        run: echo "version=$(uv run --locked python -c 'import importlib.metadata as m; print(m.version("BabelDOC"))')" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/babeldoc
+          key: babeldoc-${{ runner.os }}-${{ steps.babeldoc.outputs.version }}
+      - name: BabelDOC's assets
+        run: uv run --locked just layout-assets
       - name: Tests
         run: uv run --locked just test
 

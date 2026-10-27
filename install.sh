@@ -2,8 +2,8 @@
 # Installs Aldi on macOS:
 #   curl -LsSf https://github.com/leomontigatti/aldi/releases/latest/download/install.sh | sh
 # It installs uv, then Aldi as a uv tool from the latest Release tag with uv.lock's pins, then `aldi setup` saves
-# the reporting token and creates Aldi.app in Applications. A step that fails files an Error Report (ADR 4) that
-# names only the step and the system. Running it again reinstalls the latest Release.
+# the reporting token, creates Aldi.app in Applications and downloads what the Layout-kept Translation needs
+# (~345 MB). A step that fails files an Error Report (ADR 4) that names only the step and the system. Running it again reinstalls the latest Release.
 #
 # ALDI_REPORT_TOKEN skips the question for the token; ALDI_SOURCE, a checkout, is installed instead of the
 # latest Release (CI's test of this script).
