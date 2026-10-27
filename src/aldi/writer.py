@@ -20,7 +20,8 @@ _TYPST_PREAMBLE = """\
 """
 
 # Without auto identifiers pandoc writes no `<label>` per heading, which Typst rejects for non-ASCII headings.
-_MARKDOWN = "markdown-auto_identifiers"
+# Without fancy lists a paragraph starting `a)`, `i.`, `(1)` or `A.` stays a paragraph; `_escape` handles `1.`.
+_MARKDOWN = "markdown-auto_identifiers-fancy_lists"
 # Every Markdown special but the `*` and `\` a block's inline Markdown already carries, escaped or as emphasis.
 _MARKDOWN_SPECIALS = re.compile(r"([`_{}\[\]<>#+\-!|~^$])")
 _ORDERED_LIST_START = re.compile(r"^(\d+)([.)])")

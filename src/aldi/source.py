@@ -37,6 +37,8 @@ _REFERENCES_TITLE = re.compile(
     re.IGNORECASE,
 )
 _PAGE_NUMBER = re.compile(r"[\divxlc]+", re.IGNORECASE)
+# A list item's printed marker: a bullet, or an enumerator such as `1.`, `1)`, `a)`, `(1)` or `ii.`.
+_LIST_MARKER = re.compile(r"(?:[•◦▪–-]|\d{1,3}[.)]|[a-z]\)|\(\d{1,3}\)|[ivx]{1,4}\.)\s+")
 _TYPST_IMAGES = {"png", "jpeg", "jpg", "gif"}
 # A scan is rarely sharper than this: higher only makes the images Gemini reads and the crops larger.
 _DPI = 150
@@ -66,6 +68,9 @@ def read_pages(path: Path, folder: Path, numbers: Collection[int] | None = None)
                 in_references = bool(_REFERENCES_TITLE.fullmatch(plain(block.text)))
             elif block.kind == Kind.PARAGRAPH and in_references:
                 block = replace(block, kind=Kind.REFERENCE)
+            elif block.kind == Kind.PARAGRAPH and (marker := _LIST_MARKER.match(block.text)):
+                # The writer prints its own bullet.
+                block = replace(block, kind=Kind.LIST_ITEM, text=block.text[marker.end() :])
             blocks.append(block)
         result.append(SourcePage(number, captions_under_figures(blocks), scanned=number in scanned))
     return result

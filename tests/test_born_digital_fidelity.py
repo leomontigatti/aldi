@@ -6,6 +6,7 @@ import zipfile
 import pymupdf
 import pytest
 
+from aldi.translator import TextTranslation
 from conftest import (
     ARTICLE_FIGURE_COLOR,
     ARTICLE_FIGURE_LABEL,
@@ -13,6 +14,7 @@ from conftest import (
     ARTICLE_REFERENCES,
     ARTICLE_TABLE,
     build_article_pdf,
+    build_born_digital_pdf,
 )
 
 
@@ -180,3 +182,53 @@ def test_accents_and_enye_render_in_both_files(article):
     for text in (pdf_text(pdf), docx_text(docx)):
         assert "ES: Children in the Peñalolén cohort" in text
         assert "Muñoz" in text and "Corrêa" in text
+
+
+def docx_paragraphs(path):
+    """Each paragraph of the DOCX as (text, whether it is a list item)."""
+    paragraphs = []
+    for paragraph in re.findall(r"<w:p[ >].*?</w:p>", docx_xml(path)):
+        text = " ".join(re.sub(r"<[^>]+>", " ", paragraph).split())
+        paragraphs.append((text, "<w:numPr>" in paragraph))
+    return paragraphs
+
+
+def test_a_list_stays_a_list_without_its_printed_markers(app, documents_dir, tmp_path):
+    # Bug: every text block became a paragraph, so a list arrived as paragraphs starting with `•` or `1.`.
+    items = ["• Brush twice a day.", "– Use fluoride toothpaste.", "1. Floss every night.", "a) Rinse after meals."]
+    items += ["(2) Visit the dentist.", "ii. Replace the brush."]
+    document = pymupdf.open()
+    paragraphs = ["Oral hygiene starts at home.", *items]
+    html = "".join(f"<p>{paragraph}</p>" for paragraph in paragraphs)
+    document.new_page().insert_htmlbox(pymupdf.Rect(50, 60, 545, 750), html, css="* {margin: 0 0 8pt 0;}")
+    document.save(source := tmp_path / "Higiene.pdf")
+
+    app.wait_for(app.upload(source)["id"])
+
+    paragraphs = dict(docx_paragraphs(documents_dir / "Aldi" / "Higiene" / "Higiene (es).docx"))
+    assert paragraphs["ES: Oral hygiene starts at home."] is False
+    for item in ("Brush twice a day.", "Use fluoride toothpaste.", "Floss every night.", "Rinse after meals."):
+        assert paragraphs[f"ES: {item}"] is True
+    assert paragraphs["ES: Visit the dentist."] is True
+    assert paragraphs["ES: Replace the brush."] is True
+
+
+def test_a_paragraph_that_starts_like_a_list_marker_stays_a_paragraph(app, translator, documents_dir, tmp_path):
+    # Bug: Pandoc read `a)`, `i.`, `(1)` and `A.` at the start of a Spanish paragraph as a list and dropped them.
+    spanish = {
+        "The enamel.": "a) el esmalte es duro.",
+        "The dentin.": "i. la dentina es blanda.",
+        "The pulp.": "(1) la pulpa está viva.",
+        "The author.": "A. Corrêa estudió la pulpa.",
+    }
+    translator.translate_texts = lambda texts, terms: TextTranslation([spanish[text] for text in texts], dict(terms))
+    source = build_born_digital_pdf(tmp_path / "Pulpa.pdf", [list(spanish)])
+
+    app.wait_for(app.upload(source)["id"])
+
+    folder = documents_dir / "Aldi" / "Pulpa"
+    paragraphs = dict(docx_paragraphs(folder / "Pulpa (es).docx"))
+    text = pdf_text(folder / "Pulpa (es).pdf")
+    for paragraph in spanish.values():
+        assert paragraphs[paragraph] is False
+        assert paragraph in text
