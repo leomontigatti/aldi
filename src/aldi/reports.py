@@ -217,6 +217,8 @@ class Reporter:
                 issues = github.open_reports()
                 state["checked"] = today
                 self._save_state(state)
+                # The renewal is not a report: the cap never holds it back.
+                self._warn_before_expiry(github, issues)
                 for path in queued:
                     if state["sent"] >= DAILY_CAP:
                         return True
@@ -225,7 +227,6 @@ class Reporter:
                     path.unlink()
                     state["sent"] += 1
                     self._save_state(state)
-                self._warn_before_expiry(github, issues)
             except GitHubUnavailable:
                 return False
             return False

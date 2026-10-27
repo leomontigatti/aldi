@@ -1,6 +1,7 @@
 """Mantener el diseño: the Spanish written over the original pages by `pdf2zh-next`, for pages with text (#13)."""
 
 import sys
+import threading
 import time
 
 import pymupdf
@@ -86,6 +87,32 @@ def test_a_quota_pause_in_mantener_el_diseno_waits_and_then_finishes(app, transl
     assert clock.waits == [5 * 60]
     (text,) = page_texts(documents_dir / "Aldi" / "Esmalte" / "Esmalte (es, diseño).pdf")
     assert "ES: Page 2 describes the enamel" in text
+
+
+def test_a_resumed_mantener_el_diseno_run_drops_the_pause_notice_as_it_starts_again(app, translator, clock, tmp_path):
+    # Bug: the run is one request, so the notice stayed up until the whole resumed run returned.
+    answer = translator.answer_layout_prompt
+    failures = [QuotaExhausted()]
+    answering = threading.Event()
+
+    def out_of_quota_once(prompt):
+        if failures:
+            raise failures.pop()
+        answering.wait(timeout=60)
+        return answer(prompt)
+
+    translator.answer_layout_prompt = out_of_quota_once
+    clock.hold()
+    document = app.drop(three_pages(tmp_path))
+    started = app.send("POST", "/api/jobs", {"document": document["id"], "pages": "2", "output_mode": "layout"})
+    app.wait_for(started["id"], until=lambda job: job["state"] == "paused", timeout=180)
+
+    clock.release()
+    job = app.wait_for(started["id"], until=lambda job: job["state"] != "paused")
+
+    assert (job["state"], job["notice"]) == ("running", "")
+    answering.set()
+    assert app.wait_for(started["id"], timeout=180)["state"] == "done"
 
 
 def test_mantener_el_diseno_takes_its_own_time_per_page():

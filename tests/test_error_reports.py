@@ -211,6 +211,26 @@ def test_a_daily_cap_holds_and_the_rest_go_out_the_next_day(tmp_path):
     reporter.close()
 
 
+def test_the_token_expiry_warning_goes_out_even_when_the_cap_holds_the_reports(tmp_path):
+    # Bug: a send held back by the daily cap returned before the expiry check, so the warning waited on the queue.
+    github = FakeGitHub()
+    clock = Clock()
+    reporter = Reporter(tmp_path, lambda: REPORT_TOKEN, github, now=clock, interval=3600)
+    context = Context("Reading Version", "born-digital", 3, [2])
+    problems = reports_of_problems(DAILY_CAP + 1)
+    for details in problems[:DAILY_CAP]:
+        reporter.report("Failed Pages", details, context)
+
+    github.token_expires = clock.now + timedelta(days=7)
+    told = reporter.report("Failed Pages", problems[-1], context)
+
+    assert told == HELD
+    assert [issue["title"] for issue in github.issues if "token" in issue["title"].lower()] == [
+        f"Renew the Error Report token before {github.token_expires.date().isoformat()}"
+    ]
+    reporter.close()
+
+
 def test_the_expiry_header_is_read_in_both_of_githubs_formats():
     assert token_expiry("2026-12-01 00:00:00 UTC") == datetime(2026, 12, 1, tzinfo=UTC)
     assert token_expiry("2026-12-01 03:00:00 +0300") == datetime(2026, 12, 1, tzinfo=UTC)

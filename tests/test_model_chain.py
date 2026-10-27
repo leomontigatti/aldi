@@ -296,16 +296,18 @@ def test_a_key_refused_mid_job_pauses_it_until_she_saves_a_new_key(
     assert_every_page_once_in_order(documents_dir, "Esmalte")
 
 
-def test_a_model_that_refuses_access_passes_the_job_to_the_next(app, gemini, documents_dir, tmp_path):
+def test_a_model_that_refuses_access_passes_the_job_to_the_next(app, gemini, clock, tmp_path):
     # Bug: a 403 from one model (Gemma not open to her key) paused the whole Job for a new key.
     gemini.fail(FLASH, quota_error())
     gemini.fail(LITE, quota_error())
     gemini.fail(GEMMA, key_error(403))
+    clock.hold()
 
     job_id = app.upload(build_born_digital_pdf(tmp_path / "Esmalte.pdf", PAGES[:1]))["id"]
     job = app.wait_for(job_id, until=lambda job: job["state"] == "paused")
 
     assert job["notice"] == "En pausa hasta que Gemini vuelva a estar disponible"
+    clock.release()
 
 
 def test_a_model_refusing_access_moves_the_request_down_the_chain(translator, gemini):

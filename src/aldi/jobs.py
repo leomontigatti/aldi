@@ -393,21 +393,21 @@ class JobStore:
 
     def _ask(self, job_id: str, request: Callable[[], _Answer]) -> _Answer:
         """The request's answer, waiting out a Quota Pause, a lost connection or a refused key as often as it takes:
-        none is the page's fault, so none makes it a Failed Page."""
+        none is the page's fault, so none makes it a Failed Page.
+
+        The Job is running again from the moment the request is asked again: a Layout-kept run is one request, and
+        lays the pages out long before it answers."""
         while True:
             keys = self._keys
             try:
-                answer = request()
+                return request()
             except QuotaExhausted:
                 self._wait(job_id, QUOTA_PAUSE_NOTICE, QUOTA_PAUSE)
             except Offline:
                 self._wait(job_id, OFFLINE_NOTICE, OFFLINE_WAIT)
             except KeyRefused:
                 self._wait_for_key(job_id, keys)
-            else:
-                if self.get(job_id).state == "paused":
-                    self._update(job_id, state="running", notice="")
-                return answer
+            self._update(job_id, state="running", notice="")
 
     def _wait(self, job_id: str, notice: str, seconds: float) -> None:
         self._update(job_id, state="paused", notice=notice)
