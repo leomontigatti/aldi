@@ -5,13 +5,29 @@ description = "Translate English or Portuguese PDFs to Spanish, keeping figures 
 readme = "README.md"
 # pdf2zh-next supports up to 3.13; one version everywhere, the one `.python-version` names.
 requires-python = "==3.12.*"
-dependencies = []
+dependencies = [
+    # pdf2zh-next 2.9.0 broke on bitstring 5 in the spike (docs/adr/0002); 4.4 is untried.
+    "bitstring<4.4",
+    "google-genai>=1.0",
+    "pdf2zh-next==2.9.0",
+    "platformdirs>=4.0",
+    "pydantic>=2.0",
+    # pdf2zh-next 2.9.0 (Mantener el diseño) requires pymupdf<1.25.3: pinned now so that ticket adds no downgrade.
+    "pymupdf<1.25.3",
+    "pypandoc-binary>=1.13",
+    "pywebview>=6.0",
+    "typst>=0.13",
+]
+
+[project.scripts]
+aldi = "aldi.app:main"
 
 # `test` is all CI's Windows and macOS jobs install; `lint` runs on Linux only.
 [dependency-groups]
 test = [
     "rust-just>=1.58",
     "pytest>=9.0",
+    "psutil>=7.2",
 ]
 lint = [
     "pre-commit>=4.6",
@@ -37,6 +53,13 @@ target-version = "py312"
 [tool.ruff.lint]
 select = ["E", "W", "C90", "F", "UP", "I", "B", "PTH"]
 
+[tool.ruff.lint.isort]
+# Tests import their builders from `conftest`; without this, ruff sorts it as first- or third-party depending on
+# whether `tests/conftest.py` is among the files it was given, so pre-commit on staged files and on all disagree.
+known-first-party = ["aldi", "conftest"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = ["--strict-markers", "-q"]
+# PyMuPDF's SWIG bindings warn on import under Python 3.12; nothing to act on.
+filterwarnings = ["ignore:builtin type .* has no __module__ attribute:DeprecationWarning"]

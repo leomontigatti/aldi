@@ -20,10 +20,11 @@ The `review-paths` block is the same list as paths, for `review.py tier`. The ar
 does not have yet; when a module lands under another name, update its line in the same PR.
 
 ```review-paths
-full laptop: ^(install\.(ps1|sh)|src/aldi/(install|update|launcher)|scripts/install)
+full laptop: ^(install\.(ps1|sh)|src/aldi/(install|update|reinstall|launcher)|scripts/install)
 full key: ^(\.gitignore|t3\.json|src/aldi/(settings|config|keys?|gemini)\b)
 full report: ^src/aldi/(reports?|reporting|errors?)\b
-full pins: ^(pyproject\.toml|uv\.lock)$
+full files: ^src/aldi/results\b
+full pins: ^(pyproject\.toml|uv\.lock|install-constraints\.txt)$
 quiet: ^\.pre-commit-config\.yaml$
 quiet: ^\.github/dependabot\.yml$
 quiet: ^\.env\.example$
@@ -63,6 +64,8 @@ Where this code is likely to be hurt, for the correctness brief:
 ## One-way doors
 
 - A release tag: her laptop installs it on the next update, and a broken one may also break the update button.
+  The tag is `v` plus `pyproject.toml`'s version (the app compares the two), or the release workflow makes no
+  Release of it.
 - Making the key or her documents leave her laptop for anywhere new.
 - An **Error Report** that puts document text, a file name or a key in a public issue: it cannot be unpublished.
 - Deleting anything outside the app's own **Job** folders.
