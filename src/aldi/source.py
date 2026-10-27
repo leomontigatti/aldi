@@ -42,6 +42,12 @@ _LIST_MARKER = re.compile(r"(?:[•◦▪–-]|\d{1,3}[.)]|[a-z]\)|\(\d{1,3}\)|[
 _TYPST_IMAGES = {"png", "jpeg", "jpg", "gif"}
 # A scan is rarely sharper than this: higher only makes the images Gemini reads and the crops larger.
 _DPI = 150
+# A drawing is a Figure when both its sides reach this many points (about 2 cm): rules and underlines do not.
+_FIGURE_SIDE = 50
+# A drawing that frames more text than this is a box around a passage, not a Figure with labels.
+_FIGURE_TEXT = 200
+# A drawing this close to the page's size is its border.
+_PAGE_BORDER = 0.95
 
 
 def inspect(path: Path) -> list[bool]:
@@ -111,6 +117,10 @@ def _read_items(page: pymupdf.Page, folder: Path) -> list[_Item]:
     # Text printed over a Figure (its labels and arrows) is part of it, and a table's text is in its cells.
     taken = [pymupdf.Rect(table.bbox) for table in tables]
     taken += [pymupdf.Rect(block["bbox"]) for block in blocks if block["type"] == 1]
+    for number, rect in enumerate(_drawn_figures(page, blocks, taken), start=1):
+        image = _save_drawing(page, rect, folder / "figures" / f"{page.number + 1:04d}-d{number}.png")
+        items.append(_Item(rect, page.rect, Block(Kind.FIGURE, image=image, box=_normalized(rect, page.rect))))
+        taken.append(rect)
     figures = 0
     for block in blocks:
         rect = pymupdf.Rect(block["bbox"])
@@ -130,6 +140,35 @@ def _read_items(page: pymupdf.Page, folder: Path) -> list[_Item]:
             item = _Item(rect, page.rect, Block(Kind.PARAGRAPH, text=text), sizes.most_common(1)[0][0], sizes)
             items.append(item)
     return _reading_order(items, page.rect.width)
+
+
+def _drawn_figures(page: pymupdf.Page, blocks: list[dict], taken: list[pymupdf.Rect]) -> list[pymupdf.Rect]:
+    """Where the page draws a Figure in vectors (a diagram or a chart): a cluster of drawings large enough, not a
+    table nor an image, and holding no more text than a Figure's labels. Each box takes in its stroke's edge."""
+    figures = []
+    for cluster in page.cluster_drawings():
+        rect = (cluster + (-2, -2, 2, 2)) & page.rect
+        if min(rect.width, rect.height) < _FIGURE_SIDE or any(rect.intersects(other) for other in taken):
+            continue
+        if rect.width >= page.rect.width * _PAGE_BORDER and rect.height >= page.rect.height * _PAGE_BORDER:
+            continue
+        inside = [block for block in blocks if block["type"] == 0 and rect.contains(_centre(block))]
+        text = "".join(span["text"] for block in inside for line in block["lines"] for span in line["spans"])
+        if len(text.strip()) <= _FIGURE_TEXT:
+            figures.append(rect)
+    return figures
+
+
+def _centre(block: dict) -> pymupdf.Point:
+    rect = pymupdf.Rect(block["bbox"])
+    return (rect.tl + rect.br) / 2
+
+
+def _save_drawing(page: pymupdf.Page, rect: pymupdf.Rect, path: Path) -> str:
+    """Writes the part of the page inside `rect` as a PNG; returns its path relative to the Job folder."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(page.get_pixmap(dpi=_DPI, clip=rect).tobytes("png"))
+    return path.relative_to(path.parent.parent).as_posix()
 
 
 def _save_image(block: dict, stem: Path) -> str:

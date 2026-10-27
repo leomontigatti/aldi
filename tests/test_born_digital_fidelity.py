@@ -232,3 +232,46 @@ def test_a_paragraph_that_starts_like_a_list_marker_stays_a_paragraph(app, trans
     for paragraph in spanish.values():
         assert paragraphs[paragraph] is False
         assert paragraph in text
+
+
+DIAGRAM_LABEL = "Pulp chamber"
+
+
+def build_diagram_pdf(path):
+    """A page with a paragraph, a drawn diagram (lines, a rectangle and a label) with its caption under it, a ruled
+    table and a horizontal rule across the page."""
+    document = pymupdf.open()
+    page = document.new_page()
+    page.insert_text((50, 60), "The diagram shows the parts of a molar.", fontsize=11)
+    page.draw_rect(pymupdf.Rect(150, 90, 400, 260), color=(0, 0, 0), width=1)
+    page.draw_line((180, 230), (275, 120), color=(0.2, 0.2, 0.8), width=2)
+    page.draw_line((275, 120), (370, 230), color=(0.2, 0.2, 0.8), width=2)
+    page.draw_circle((275, 200), 25, color=(0.8, 0.1, 0.1), width=2)
+    page.insert_text((245, 250), DIAGRAM_LABEL, fontsize=9)
+    page.insert_text((150, 280), "Figure 2. Diagram of a molar.", fontsize=10)
+    top, row_height, columns = 320, 20, (50, 300, 545)
+    for row_number, row in enumerate(ARTICLE_TABLE):
+        y = top + row_number * row_height
+        for left, right, cell in zip(columns, columns[1:], row, strict=False):
+            page.draw_rect(pymupdf.Rect(left, y, right, y + row_height), color=(0, 0, 0), width=0.5)
+            page.insert_text((left + 4, y + 14), cell, fontsize=10)
+    page.draw_line((50, 420), (545, 420), color=(0, 0, 0), width=0.5)
+    page.insert_text((50, 450), "The rule above closes the section.", fontsize=11)
+    document.save(path)
+    return path
+
+
+def test_a_drawn_diagram_comes_out_as_one_image_with_its_caption_and_label(app, translator, documents_dir, tmp_path):
+    # Bug: only bitmap images were Figures, so a diagram drawn in vectors vanished and its label became a paragraph.
+    app.wait_for(app.upload(build_diagram_pdf(tmp_path / "Molar.pdf"))["id"])
+
+    folder = documents_dir / "Aldi" / "Molar"
+    pdf, docx = folder / "Molar (es).pdf", folder / "Molar (es).docx"
+    media = [name for name in zipfile.ZipFile(docx).namelist() if name.startswith("word/media/")]
+    assert len(media) == 1
+    assert sum(len(page.get_images()) for page in pymupdf.open(pdf)) == 1
+    assert len(re.findall(r"<w:tbl>", docx_xml(docx))) == 1
+    text = docx_text(docx)
+    assert "ES: Figure 2. Diagram of a molar." in text
+    assert text.index("ES: The diagram shows") < text.index("ES: Figure 2.") < text.index("ES: Tooth")
+    assert not any(DIAGRAM_LABEL in sent for request in translator.requests for sent in request)
