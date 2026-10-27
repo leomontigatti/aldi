@@ -13,6 +13,7 @@ from typing import TypeVar
 
 from aldi import reports
 from aldi.blocks import Block
+from aldi.files import write_atomically
 from aldi.page_range import format_page_range, parse_page_range
 from aldi.reading import PAGE_BATCH, read_page_batch, translate_page
 from aldi.reports import Context, Reporter
@@ -301,9 +302,7 @@ class JobStore:
                     else [self._translate(job_id, page, terms)]
                 )
                 for batch_page, answer in zip(batch, answers, strict=True):
-                    _page_file(folder, batch_page.number).write_text(
-                        json.dumps(answer, ensure_ascii=False), encoding="utf-8"
-                    )
+                    write_atomically(_page_file(folder, batch_page.number), json.dumps(answer, ensure_ascii=False))
             saved = json.loads(done.read_text(encoding="utf-8"))
             terms = saved["terms"]
             if saved.get("failed"):
@@ -445,7 +444,7 @@ class JobStore:
         with self._lock:
             self._jobs[job.id] = job
             data = json.dumps(asdict(job), ensure_ascii=False, indent=2)
-        (self._folder(job.id) / "job.json").write_text(data, encoding="utf-8")
+        write_atomically(self._folder(job.id) / "job.json", data)
 
     def _folder(self, job_id: str) -> Path:
         return self._jobs_dir / job_id

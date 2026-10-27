@@ -27,6 +27,7 @@ from typing import Protocol
 from google.genai import errors as genai_errors
 
 import aldi
+from aldi.files import write_atomically
 from aldi.translator import KeyRefused, Offline, QuotaExhausted
 
 SENT = "Algo salió mal. Ya se envió un informe para que lo arreglen."
@@ -188,12 +189,12 @@ class Reporter:
                 if queued["fingerprint"] == details.fingerprint:
                     # A loop while offline adds to the one queued report instead of piling up more.
                     queued["count"] += 1
-                    path.write_text(json.dumps(queued, ensure_ascii=False), encoding="utf-8")
+                    write_atomically(path, json.dumps(queued, ensure_ascii=False))
                     break
             else:
                 path = self._queue / f"{self._now():%Y%m%d%H%M%S}-{uuid.uuid4().hex[:8]}.json"
                 item = {"fingerprint": details.fingerprint, "title": self._redact(title), "body": body, "count": 1}
-                path.write_text(json.dumps(item, ensure_ascii=False), encoding="utf-8")
+                write_atomically(path, json.dumps(item, ensure_ascii=False))
         held = self._send_safely()
         if not path.exists():
             return SENT
@@ -291,7 +292,7 @@ class Reporter:
 
     def _save_state(self, state: dict) -> None:
         self._folder.mkdir(parents=True, exist_ok=True)
-        (self._folder / "state.json").write_text(json.dumps(state), encoding="utf-8")
+        write_atomically(self._folder / "state.json", json.dumps(state))
 
 
 class GitHubClient:

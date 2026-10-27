@@ -9,6 +9,8 @@ from pathlib import Path
 
 import platformdirs
 
+from aldi.files import write_atomically
+
 
 def default_config_dir() -> Path:
     return Path(platformdirs.user_config_dir("Aldi", appauthor=False))
@@ -39,7 +41,7 @@ class Settings:
     def _save(self, **changes: str) -> None:
         settings = self._read() | changes
         self._file.parent.mkdir(parents=True, exist_ok=True)
-        self._file.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+        write_atomically(self._file, json.dumps(settings, indent=2))
 
     def _read(self) -> dict:
         if not self._file.is_file():
