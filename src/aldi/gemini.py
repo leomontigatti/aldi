@@ -126,8 +126,6 @@ class GeminiTranslator:
         # When each model that answered 429 has quota again. Flash's free limit is 5 requests a minute, so most 429s
         # are over within the minute and the next page goes back to the first model.
         self._out_of_quota_until: dict[str, float] = {}
-        # Mantener el diseño's waits in a row since flash last answered.
-        self._layout_waits = 0
 
     def translate_texts(self, texts: Sequence[str], terms: Mapping[str, str]) -> TextTranslation:
         request = json.dumps({"blocks": list(texts), "terms": dict(terms)}, ensure_ascii=False)
@@ -158,21 +156,19 @@ class GeminiTranslator:
         model, response = self._generate(contents, _BATCH_INSTRUCTION, PageBatchAnswer, _BATCH_SHAPE)
         return PageBatchReply(response.text or "", model)
 
-    def answer_layout_prompt(self, prompt: str) -> str:
+    def answer_layout_prompt(self, prompt: str, waited: int = 0) -> str:
         """Asks flash once. Out of quota or busy, raises `QuotaExhausted` with the wait before asking again, for the
-        Job to wait out as a Quota Pause she sees; after `LAYOUT_QUOTA_WAITS` such waits in a row, without one."""
+        Job to wait out as a Quota Pause she sees; after each `LAYOUT_QUOTA_WAITS` such waits in a row, without one.
+        The Job counts its own waits: two Jobs' prompts may take turns, and a Job may stop between them."""
         model = self._chain[0]
         try:
-            answer = self._generate(prompt, chain=(model,), busy_waits=())[1].text or ""
+            return self._generate(prompt, chain=(model,), busy_waits=())[1].text or ""
         except QuotaExhausted:
-            waited, self._layout_waits = self._layout_waits, self._layout_waits + 1
-            if waited >= LAYOUT_QUOTA_WAITS:
-                self._layout_waits = 0
+            waited %= LAYOUT_QUOTA_WAITS + 1
+            if waited == LAYOUT_QUOTA_WAITS:
                 raise
             quota = self._out_of_quota_until.get(model, 0) - self._clock()
             raise QuotaExhausted(retry_after=quota if quota > 0 else BUSY_WAITS[waited]) from None
-        self._layout_waits = 0
-        return answer
 
     def _generate(
         self,

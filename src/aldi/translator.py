@@ -70,10 +70,11 @@ class Translator(Protocol):
         """
         ...
 
-    def answer_layout_prompt(self, prompt: str) -> str:
+    def answer_layout_prompt(self, prompt: str, waited: int = 0) -> str:
         """Answer a prompt `pdf2zh-next` wrote for a Layout-kept Translation, with the text Gemini gives.
 
         The prompt holds its own instructions and the shape of the answer it expects; `pdf2zh-next` checks it.
+        `waited` counts the Job's waits in a row on `QuotaExhausted` for this prompt.
         """
         ...
 

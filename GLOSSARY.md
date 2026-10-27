@@ -72,7 +72,8 @@ _Spanish_: Marca de página
 
 **Job**:
 One translation of one **Source Document**: its **Page Range**, its **Output Mode**, its progress page by page, and
-its results. Survives closing the app.
+its results. Survives closing the app. Jobs translate one at a time, in the order dropped; until one finishes,
+`Cancelar` stops it and drops it with its working files.
 _Spanish_: Traducción
 _Avoid_: Task, run
 
@@ -102,7 +103,7 @@ _Avoid_: Fallback keys
 
 **Quota Pause**:
 The state of a **Job** when every model in the **Model Chain** is out of quota: it stops after its last finished
-page and resumes from there, by itself, once quota is back.
+page and resumes from there, by itself, once quota is back. Meanwhile the next **Job** in line translates.
 _Spanish_: En pausa hasta que Gemini vuelva a estar disponible
 _Avoid_: Failure, error
 

@@ -8,6 +8,7 @@ import time
 import psutil
 import pymupdf
 import pytest
+from google.genai import errors
 
 from aldi.estimate import estimate
 from aldi.gemini import MODEL_CHAIN, GeminiTranslator
@@ -78,7 +79,7 @@ def test_a_quota_pause_in_mantener_el_diseno_waits_and_then_finishes(app, transl
     answer = translator.answer_layout_prompt
     failures = [QuotaExhausted()]
 
-    def out_of_quota_once(prompt):
+    def out_of_quota_once(prompt, waited=0):
         if failures:
             raise failures.pop()
         return answer(prompt)
@@ -101,7 +102,7 @@ def test_a_resumed_mantener_el_diseno_run_drops_the_pause_notice_as_it_starts_ag
     failures = [QuotaExhausted()]
     answering = threading.Event()
 
-    def out_of_quota_once(prompt):
+    def out_of_quota_once(prompt, waited=0):
         if failures:
             raise failures.pop()
         answering.wait(timeout=60)
@@ -161,6 +162,65 @@ def test_mantener_el_diseno_shows_the_quota_pause_while_it_waits_on_gemini(
     assert clock.waits == [wait]
 
 
+def test_a_mantener_el_diseno_job_paused_on_flash_lets_a_reading_version_run_first(
+    app, translator, clock, documents_dir, tmp_path
+):
+    # Bug: a Job paused on flash's daily quota held the queue for 9 hours.
+    answer = translator.answer_layout_prompt
+    failures = [QuotaExhausted()]
+    in_flight, most = [0], [0]
+
+    def one_at_a_time(call):
+        def counted(*args):
+            in_flight[0] += 1
+            most[0] = max(most[0], in_flight[0])
+            try:
+                time.sleep(0.05)
+                return call(*args)
+            finally:
+                in_flight[0] -= 1
+
+        return counted
+
+    def out_of_quota_once(prompt, waited=0):
+        if failures:
+            raise failures.pop()
+        return answer(prompt)
+
+    translator.answer_layout_prompt = one_at_a_time(out_of_quota_once)
+    translator.translate_texts = one_at_a_time(translator.translate_texts)
+    clock.hold()
+    document = app.drop(three_pages(tmp_path))
+    layout = app.send("POST", "/api/jobs", {"document": document["id"], "pages": "1", "output_mode": "layout"})
+    app.wait_for(layout["id"], until=lambda job: job["state"] == "paused", timeout=180)
+    reading = app.upload(build_born_digital_pdf(tmp_path / "Dentina.pdf", [["The dentin is softer."]]))
+
+    assert app.wait_for(reading["id"])["state"] == "done"
+    assert app.get(f"/api/jobs/{layout['id']}")["state"] == "paused"
+    clock.release()
+    assert app.wait_for(layout["id"], timeout=180)["state"] == "done"
+    assert clock.waits == [5 * 60]
+    assert most[0] == 1
+    assert (documents_dir / "Aldi" / "Esmalte" / "Esmalte (es, diseño).pdf").exists()
+
+
+def test_each_mantener_el_diseno_job_counts_its_own_waits_on_flash(start_app, clock, tmp_path):
+    # Bug: the count of waits in a row lived in the translator, so a Job that failed after three waits left the next
+    # Job's first 429 a full five-minute Quota Pause instead of the 429's own delay.
+    gemini = FakeGemini()
+    invalid = errors.ClientError(400, {"error": {"code": 400, "status": "INVALID_ARGUMENT"}})
+    gemini.fail(FLASH, *[quota_error("20s")] * 3, invalid, quota_error("20s"))
+    app = start_app(GeminiTranslator(gemini, sleep=clock.sleep, clock=clock.now))
+    source = three_pages(tmp_path)
+
+    for expected in ("failed", "done"):
+        document = app.drop(source)
+        started = app.send("POST", "/api/jobs", {"document": document["id"], "pages": "1", "output_mode": "layout"})
+        assert app.wait_for(started["id"], timeout=180)["state"] == expected
+
+    assert clock.waits == [20, 20, 20, 20]
+
+
 def test_closing_the_app_while_mantener_el_diseno_lays_out_stops_it_at_once(start_app, translator, tmp_path):
     app = start_app(translator)
     document = app.drop(three_pages(tmp_path))
@@ -176,13 +236,30 @@ def test_closing_the_app_while_mantener_el_diseno_lays_out_stops_it_at_once(star
     assert job["state"] == "done", job
 
 
+def test_cancelling_mantener_el_diseno_ends_babeldoc_and_drops_the_job(app, translator, documents_dir, tmp_path):
+    document = app.drop(three_pages(tmp_path))
+    started = app.send("POST", "/api/jobs", {"document": document["id"], "pages": "", "output_mode": "layout"})
+    folder = tmp_path / "data" / "jobs" / started["id"]
+    wait_until(lambda: (folder / "layout" / "work").exists(), timeout=120)
+
+    cancelling = time.monotonic()
+    app.send("POST", f"/api/jobs/{started['id']}/cancel")
+
+    wait_until(lambda: not folder.exists(), timeout=10)
+    assert time.monotonic() - cancelling < 5
+    assert not [child for child in multiprocessing.active_children() if child.name == "aldi-babeldoc"]
+    assert app.get("/api/jobs")["jobs"] == []
+    assert translator.layout_prompts == []
+    assert not documents_dir.exists()
+
+
 def test_any_other_gemini_error_in_mantener_el_diseno_fails_the_job_and_reports_it(
     app, translator, github, documents_dir, tmp_path
 ):
     answer = translator.answer_layout_prompt
     failures = [RuntimeError("Gemini answered something unreadable")]
 
-    def unreadable_once(prompt):
+    def unreadable_once(prompt, waited=0):
         if failures:
             raise failures.pop()
         return answer(prompt)

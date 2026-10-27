@@ -102,7 +102,7 @@ class FakeTranslator:
     def page_blocks(self, number: int) -> list[dict]:
         return self.scanned.get(number, [{"kind": "paragraph", "text": f"ES: Page {number}"}])
 
-    def answer_layout_prompt(self, prompt: str) -> str:
+    def answer_layout_prompt(self, prompt: str, waited: int = 0) -> str:
         """Answers `pdf2zh-next`'s prompts as Gemini would, each text prefixed with `ES:`: a batch of paragraphs as
         the JSON array it asks for, a single paragraph as its text."""
         self.layout_prompts.append(prompt)

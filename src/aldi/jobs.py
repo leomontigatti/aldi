@@ -7,7 +7,6 @@ import threading
 import traceback
 import uuid
 from collections.abc import Callable, Sequence
-from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TypeVar
@@ -38,7 +37,8 @@ _log = logging.getLogger(__name__)
 
 
 class Closing(Exception):
-    """The app is closing while a Job waits: it stops where it is, its finished pages kept."""
+    """The app is closing, or she cancelled the Job: it stops where it is. Closing keeps its finished pages for the
+    next start; a cancelled Job's folder goes with it."""
 
 
 def closing_wait(closing: threading.Event) -> Callable[[float], None]:
@@ -104,6 +104,10 @@ class LayoutNotOffered(Exception):
 class JobStore:
     """Every Job ever started; Jobs a closed app left unfinished run again, from their first page not yet done.
 
+    One Job translates at a time: they would otherwise compete for the same free quota. The turn goes to the Job
+    dropped first among those ready; a Job that pauses (a Quota Pause, no connection, a refused key) gives it up
+    while it waits, and takes it again once its wait is over and the Job translating finishes or pauses.
+
     A page is done when its `pages/NNNN.json` exists: it holds the page's Spanish and the Term List after it, or
     `"failed": true` for a Failed Page, which only a retry of the Job's Failed Pages translates again.
     """
@@ -119,7 +123,7 @@ class JobStore:
         closing: threading.Event | None = None,
     ):
         """`closing` is set when the app closes, `closing_wait(closing)` being the translator's waits too; `sleep`
-        stands in for the store's own waits in tests."""
+        stands in for the store's own waits in tests, which closing the app or cancelling the Job end otherwise."""
         self._jobs_dir = data_dir / "jobs"
         # A PDF dropped but never started is not kept past the app's run.
         self._dropped_dir = data_dir / "dropped"
@@ -131,20 +135,24 @@ class JobStore:
         self._reporter = reporter
         self._lock = threading.Lock()
         self._closing = closing or threading.Event()
-        self._sleep = sleep or closing_wait(self._closing)
+        self._sleep = sleep
         # Counts the keys she saved, for a Job waiting on a refused key to know a new one is there.
         self._key_saved = threading.Condition()
         self._keys = 0
         self._jobs: dict[str, Job] = {}
-        # One Job at a time: they would otherwise compete for the same free quota.
-        self._worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="aldi-job")
+        self._cancelled: set[str] = set()
+        # The turn to translate: the Job holding it, and the Jobs ready for it with their place in the order.
+        self._turn = threading.Condition()
+        self._holder: str | None = None
+        self._ready: dict[str, int] = {}
+        self._threads: list[threading.Thread] = []
         saved = [Job(**json.loads(path.read_text(encoding="utf-8"))) for path in self._jobs_dir.glob("*/job.json")]
         for job in sorted(saved, key=lambda job: job.number):
             self._jobs[job.id] = job
             # A Job the app closed on while it waited out a Quota Pause, no connection or a refused key goes on too.
             if job.state in ("queued", "running", "paused"):
                 self._update(job.id, state="queued", notice="")
-                self._worker.submit(self._run, job.id)
+                self._launch(job)
 
     def drop(self, filename: str, pdf: bytes) -> SourceDocument:
         """Keeps a PDF she dropped until she starts it; raises `NotAPdfError` when it is not one."""
@@ -195,7 +203,7 @@ class JobStore:
         (self._dropped_dir / document.id).rename(folder)
         (folder / "pages").mkdir()
         self._save(job)
-        self._worker.submit(self._run, job.id)
+        self._launch(job)
         return self.get(job.id)
 
     def retry(self, job_id: str) -> Job | None:
@@ -209,8 +217,24 @@ class JobStore:
         for number in job.failed_pages:
             (self._folder(job_id) / "pages" / f"{number:04d}.json").unlink(missing_ok=True)
         self._update(job_id, failed_pages=[], notice="")
-        self._worker.submit(self._run, job_id)
+        self._launch(job)
         return self.get(job_id)
+
+    def cancel(self, job_id: str) -> bool | None:
+        """Stops a queued, running or paused Job and drops it with its Job folder; her delivered files stay. False
+        for a finished Job, None for no such Job."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job:
+                return None
+            if job.state in ("done", "failed"):
+                return False
+            del self._jobs[job_id]
+            self._cancelled.add(job_id)
+            # Gone at once, so a restart never resumes it; the rest of its folder goes when its thread stops.
+            (self._folder(job_id) / "job.json").unlink(missing_ok=True)
+        self._wake()
+        return True
 
     def get(self, job_id: str) -> Job | None:
         with self._lock:
@@ -229,10 +253,71 @@ class JobStore:
 
     def close(self) -> None:
         """Stops after the page in hand; the Job resumes from the next page when the app starts again."""
+        self._closing.set()
+        self._wake()
+        for thread in list(self._threads):
+            thread.join()
+
+    def _wake(self) -> None:
+        """Every Job waiting for its turn, a wait's end or a new key looks again at whether it should stop."""
         with self._key_saved:
-            self._closing.set()
             self._key_saved.notify_all()
-        self._worker.shutdown(wait=True, cancel_futures=True)
+        with self._turn:
+            self._turn.notify_all()
+
+    def _stopping(self, job_id: str) -> bool:
+        return self._closing.is_set() or job_id in self._cancelled
+
+    def _launch(self, job: Job) -> None:
+        """Runs the Job in a thread of its own once it has the turn; ready from now, so Jobs keep their order."""
+        with self._turn:
+            self._ready[job.id] = job.number
+        thread = threading.Thread(target=self._work, args=(job.id,), name=f"aldi-job-{job.id}")
+        self._threads = [other for other in self._threads if other.is_alive()] + [thread]
+        thread.start()
+
+    def _work(self, job_id: str) -> None:
+        try:
+            self._take_turn(job_id)
+            try:
+                self._run(job_id)
+            finally:
+                self._give_turn(job_id)
+        except Closing:
+            pass
+        finally:
+            if job_id in self._cancelled:
+                shutil.rmtree(self._folder(job_id), ignore_errors=True)
+
+    def _take_turn(self, job_id: str, waiting: Callable[[], None] | None = None) -> None:
+        """Waits until the Job is the first ready one and no other translates; `waiting` runs first when it must
+        wait. Raises `Closing` when the app closes or she cancels the Job meanwhile."""
+        with self._turn:
+            if job_id not in self._ready:
+                job = self.get(job_id)
+                if not job:
+                    raise Closing
+                self._ready[job_id] = job.number
+
+            def first() -> bool:
+                return self._holder is None and min(self._ready, key=self._ready.__getitem__) == job_id
+
+            try:
+                if waiting and not first() and not self._stopping(job_id):
+                    waiting()
+                self._turn.wait_for(lambda: self._stopping(job_id) or first())
+                if self._stopping(job_id):
+                    raise Closing
+                self._holder = job_id
+            finally:
+                del self._ready[job_id]
+                self._turn.notify_all()
+
+    def _give_turn(self, job_id: str) -> None:
+        with self._turn:
+            if self._holder == job_id:
+                self._holder = None
+                self._turn.notify_all()
 
     def _run(self, job_id: str) -> None:
         folder = self._folder(job_id)
@@ -256,6 +341,8 @@ class JobStore:
                 results = [
                     (result, f"{stem}{result.suffix}") for result in write_reading_version(translated, folder, stem)
                 ]
+            if self._stopping(job_id):
+                raise Closing
             # A retry of the Failed Pages lands beside the first results, numbered: she may have edited those.
             delivered = [deliver(result, self._documents_dir, job.name, filename) for result, filename in results]
         except Closing:
@@ -296,7 +383,7 @@ class JobStore:
         for index, page in enumerate(source):
             done = _page_file(folder, page.number)
             if not done.exists():
-                if self._closing.is_set():
+                if self._stopping(job_id):
                     raise Closing
                 batch = _page_batch(source[index:], folder) if page.scanned else [page]
                 answers = (
@@ -328,10 +415,21 @@ class JobStore:
         (folder / "layout").mkdir(exist_ok=True)
 
         def answer(prompt: str) -> str:
-            return self._ask(job_id, lambda: self._translator.answer_layout_prompt(prompt))
+            waited = 0
 
+            def ask() -> str:
+                nonlocal waited
+                try:
+                    return self._translator.answer_layout_prompt(prompt, waited)
+                except QuotaExhausted:
+                    waited += 1
+                    raise
+
+            return self._ask(job_id, ask)
+
+        stopping = lambda: self._stopping(job_id)  # noqa: E731
         try:
-            result = write_layout_kept(folder / "source.pdf", pages, folder / "layout", answer, self._closing.is_set)
+            result = write_layout_kept(folder / "source.pdf", pages, folder / "layout", answer, stopping)
         except Cancelled as cancelled:
             raise Closing from cancelled
         self._update(job_id, page=len(pages))
@@ -392,7 +490,7 @@ class JobStore:
     def _ask(self, job_id: str, request: Callable[[], _Answer]) -> _Answer:
         """The request's answer, waiting out a Quota Pause, a lost connection or a refused key as often as it takes:
         none is the page's fault, so none makes it a Failed Page. The Job is running again from the moment the
-        request is asked again."""
+        request is asked again; a Job that waits lets the next one translate meanwhile."""
         while True:
             keys = self._keys
             try:
@@ -408,18 +506,28 @@ class JobStore:
     def _wait(self, job_id: str, notice: str, seconds: float) -> None:
         _log.info("Job %s paused %g s: %s", job_id, seconds, notice)
         self._update(job_id, state="paused", notice=notice)
-        self._sleep(seconds)
-        if self._closing.is_set():
-            raise Closing
+        self._give_turn(job_id)
+        if self._sleep:
+            self._sleep(seconds)
+        else:
+            with self._turn:
+                self._turn.wait_for(lambda: self._stopping(job_id), timeout=seconds)
+        self._resume(job_id)
 
     def _wait_for_key(self, job_id: str, keys: int) -> None:
         """Asks Gemini nothing until she saves a key after the `keys`-th, the one it refused."""
         _log.info("Job %s paused until a new key is saved", job_id)
         self._update(job_id, state="paused", notice=KEY_REFUSED_NOTICE)
+        self._give_turn(job_id)
         with self._key_saved:
-            self._key_saved.wait_for(lambda: self._keys != keys or self._closing.is_set())
-        if self._closing.is_set():
+            self._key_saved.wait_for(lambda: self._keys != keys or self._stopping(job_id))
+        self._resume(job_id)
+
+    def _resume(self, job_id: str) -> None:
+        """Takes the turn back after a pause, in the queue meanwhile when another Job translates."""
+        if self._stopping(job_id):
             raise Closing
+        self._take_turn(job_id, lambda: self._update(job_id, state="queued", notice=""))
 
     def open_folder(self, job_id: str) -> bool:
         """Shows a finished Job's results folder; False when there is no such folder yet."""
@@ -430,17 +538,23 @@ class JobStore:
         return True
 
     def _update(self, job_id: str, **changes) -> None:
+        """Raises `Closing` once she cancelled the Job."""
         with self._lock:
-            job = self._jobs[job_id]
+            job = self._jobs.get(job_id)
+            if not job:
+                raise Closing
             for key, value in changes.items():
                 setattr(job, key, value)
-        self._save(job)
+            self._write(job)
 
     def _save(self, job: Job) -> None:
         with self._lock:
             self._jobs[job.id] = job
-            data = json.dumps(asdict(job), ensure_ascii=False, indent=2)
-        write_atomically(self._folder(job.id) / "job.json", data)
+            self._write(job)
+
+    def _write(self, job: Job) -> None:
+        # Under the lock: a cancelled Job's `job.json` is never written again after `cancel` removed it.
+        write_atomically(self._folder(job.id) / "job.json", json.dumps(asdict(job), ensure_ascii=False, indent=2))
 
     def _folder(self, job_id: str) -> Path:
         return self._jobs_dir / job_id

@@ -39,6 +39,9 @@ def main(path: str, spec: str) -> None:
                     sizes = sorted({round(span["size"], 2) for line in block["lines"] for span in line["spans"]})
                     text = " ".join(span["text"] for line in block["lines"] for span in line["spans"])
                     print(f"{[round(v) for v in block['bbox']]} {sizes} {text[:90]}")
+                    for line in block["lines"][1:] if len(block["lines"]) > 1 else []:
+                        start = "".join(span["text"] for span in line["spans"])
+                        print(f"    line {[round(v) for v in line['bbox']]} {start[:40]}")
                 else:
                     print(f"{[round(v) for v in block['bbox']]} image")
             page = document[number - 1]

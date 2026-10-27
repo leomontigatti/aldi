@@ -170,6 +170,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._open_folder(path.removeprefix("/api/jobs/").removesuffix("/open-folder"))
         if path.startswith("/api/jobs/") and path.endswith("/retry"):
             return self._retry(path.removeprefix("/api/jobs/").removesuffix("/retry"))
+        if path.startswith("/api/jobs/") and path.endswith("/cancel"):
+            return self._cancel(path.removeprefix("/api/jobs/").removesuffix("/cancel"))
         if path == "/api/update":
             return self._update()
         if path == "/api/window/front":
@@ -247,6 +249,14 @@ class _Handler(BaseHTTPRequestHandler):
         if not job:
             return self._json(HTTPStatus.CONFLICT, {"error": "Esta traducción no tiene páginas fallidas."})
         self._json(HTTPStatus.OK, asdict(job))
+
+    def _cancel(self, job_id: str):
+        cancelled = self.server.jobs.cancel(job_id)
+        if cancelled is None:
+            return self._json(HTTPStatus.NOT_FOUND, {"error": "No encontrado."})
+        if not cancelled:
+            return self._json(HTTPStatus.CONFLICT, {"error": "Esta traducción ya terminó."})
+        self._json(HTTPStatus.OK, {})
 
     def _open_folder(self, job_id: str):
         try:

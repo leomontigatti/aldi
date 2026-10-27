@@ -224,6 +224,17 @@ async function retry(id) {
   refresh();
 }
 
+async function cancelJob(id) {
+  message.textContent = "";
+  try {
+    const response = await fetch(`/api/jobs/${id}/cancel`, { method: "POST" });
+    if (!response.ok) message.textContent = (await response.json()).error;
+  } catch {
+    message.textContent = "No se pudo cancelar la traducción.";
+  }
+  refresh();
+}
+
 async function openFolder(id) {
   message.textContent = "";
   try {
@@ -261,11 +272,20 @@ async function refresh() {
       // An Error Report's line already starts with "Algo salió mal.", so it replaces that state rather than repeat it.
       state.textContent = job.state === "failed" && job.notice ? job.notice : describe(job);
       item.append(name, state);
-      if (job.notice && job.state !== "failed") {
+      // A paused Job's notice is its state line already.
+      if (job.notice && job.state !== "failed" && job.state !== "paused") {
         const notice = document.createElement("div");
         notice.className = "notice";
         notice.textContent = job.notice;
         item.append(notice);
+      }
+      if (["queued", "running", "paused"].includes(job.state)) {
+        const cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.className = "secondary";
+        cancel.textContent = "Cancelar";
+        cancel.addEventListener("click", () => cancelJob(job.id));
+        item.append(cancel);
       }
       if (job.state === "done") {
         const folder = document.createElement("div");
