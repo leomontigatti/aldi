@@ -9,10 +9,13 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from aldi.results import deliver, document_name
-from aldi.source import read_pages
-from aldi.translator import Translator
+from aldi.results import deliver, document_name, redeliver
+from aldi.source import SourcePage, read_pages, render_page
+from aldi.translator import Offline, QuotaExhausted, Translator
 from aldi.writer import TranslatedPage, write_reading_version
+
+# A page gets two retries before it becomes a Failed Page.
+_ATTEMPTS = 3
 
 
 @dataclass
@@ -30,12 +33,15 @@ class Job:
     """The results' folder, for the UI to show."""
     number: int = 0
     """The Job's place in the order she dropped them, from 1: the queue runs and lists Jobs in this order."""
+    failed_pages: list[int] = field(default_factory=list)
+    """The Failed Pages of a finished Job, by their number in the original."""
 
 
 class JobStore:
     """Every Job ever started; Jobs a closed app left unfinished run again, from their first page not yet done.
 
-    A page is done when its `pages/NNNN.json` exists: it holds the page's Spanish and the Term List after it.
+    A page is done when its `pages/NNNN.json` exists: it holds the page's Spanish and the Term List after it, or
+    `"failed": true` for a Failed Page, which only a retry of the Job's Failed Pages translates again.
     """
 
     def __init__(
@@ -69,6 +75,20 @@ class JobStore:
         self._worker.submit(self._run, job.id)
         return self.get(job.id)
 
+    def retry(self, job_id: str) -> Job | None:
+        """Translates a finished Job's Failed Pages again and rewrites its results; None when it has none."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job or job.state != "done" or not job.failed_pages:
+                return None
+            # Set under the lock so a second click cannot queue the same Job twice.
+            job.state = "queued"
+        for number in job.failed_pages:
+            (self._folder(job_id) / "pages" / f"{number:04d}.json").unlink(missing_ok=True)
+        self._update(job_id, failed_pages=[])
+        self._worker.submit(self._run, job_id)
+        return self.get(job_id)
+
     def get(self, job_id: str) -> Job | None:
         with self._lock:
             job = self._jobs.get(job_id)
@@ -90,27 +110,43 @@ class JobStore:
             self._update(job_id, state="running", pages=len(source))
             terms: dict[str, str] = {}
             translated = []
+            failed = []
             for page in source:
                 done = folder / "pages" / f"{page.number:04d}.json"
                 if not done.exists():
                     if self._closing.is_set():
                         return
-                    answer = self._translator.translate_texts(page.texts, terms) if page.texts else None
-                    saved = {
-                        "source": page.texts,
-                        "spanish": answer.texts if answer else [],
-                        "terms": answer.terms if answer else terms,
-                    }
+                    saved = self._translate(page, terms)
                     done.write_text(json.dumps(saved, ensure_ascii=False), encoding="utf-8")
                 saved = json.loads(done.read_text(encoding="utf-8"))
                 terms = saved["terms"]
-                translated.append(TranslatedPage(page.number, saved["spanish"]))
+                if saved.get("failed"):
+                    image = Path("pages") / f"{page.number:04d}.png"
+                    render_page(folder / "source.pdf", page.number, folder / image)
+                    failed.append(page.number)
+                    translated.append(TranslatedPage(page.number, [], failed_image=image))
+                else:
+                    translated.append(TranslatedPage(page.number, saved["spanish"]))
                 self._update(job_id, page=len(translated))
-            name = self.get(job_id).name
-            stem = f"{name} (es)"
+            job = self.get(job_id)
+            stem = f"{job.name} (es)"
             results = write_reading_version(translated, folder, stem)
-            delivered = [deliver(result, self._documents_dir, name, f"{stem}{result.suffix}") for result in results]
-            self._update(job_id, state="done", results=[d.name for d in delivered], folder=str(delivered[0].parent))
+            if job.results:
+                # A retry of the Failed Pages rewrites the files this Job delivered before.
+                delivered = [
+                    redeliver(result, Path(job.folder) / old) for result, old in zip(results, job.results, strict=True)
+                ]
+            else:
+                delivered = [
+                    deliver(result, self._documents_dir, job.name, f"{stem}{result.suffix}") for result in results
+                ]
+            self._update(
+                job_id,
+                state="done",
+                results=[d.name for d in delivered],
+                folder=str(delivered[0].parent),
+                failed_pages=failed,
+            )
         except Exception:
             (folder / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
             self._update(job_id, state="failed")
@@ -120,6 +156,22 @@ class JobStore:
         except OSError:
             # Her files are written and listed; a file browser that did not open is no reason to fail the Job.
             (folder / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
+
+    def _translate(self, page: SourcePage, terms: dict[str, str]) -> dict:
+        """What a page's `pages/NNNN.json` holds once it is done, Failed Page or not."""
+        if not page.texts:
+            return {"source": [], "spanish": [], "terms": terms}
+        for _ in range(_ATTEMPTS):
+            try:
+                answer = self._translator.translate_texts(page.texts, terms)
+            except (QuotaExhausted, Offline):
+                # Neither is the page's fault: the Job waits and asks again, and the page is not Failed.
+                raise
+            except Exception:
+                error = traceback.format_exc()
+                continue
+            return {"source": page.texts, "spanish": answer.texts, "terms": answer.terms}
+        return {"source": page.texts, "failed": True, "error": error, "terms": terms}
 
     def open_folder(self, job_id: str) -> bool:
         """Shows a finished Job's results folder; False when there is no such folder yet."""

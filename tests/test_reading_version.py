@@ -88,12 +88,9 @@ def test_markdown_characters_in_the_text_stay_as_written(app, documents_dir, tmp
     assert "ES: # 2. Mix 5*3 g with *care* and [x]_y_ <b>" in " ".join(pdf[0].get_text().split())
 
 
-def test_a_job_whose_translation_breaks_ends_as_failed(app, translator, documents_dir, tmp_path):
-    def broken(texts, terms):
-        raise RuntimeError("Gemini answered nonsense")
-
-    translator.translate_texts = broken
-    source = build_born_digital_pdf(tmp_path / "Esmalte.pdf", [["Enamel is hard."]])
+def test_a_job_whose_source_breaks_ends_as_failed(app, documents_dir, tmp_path):
+    source = tmp_path / "Esmalte.pdf"
+    source.write_bytes(b"%PDF-1.7\n" + b"\x00broken" * 50)
 
     job = app.wait_for(app.upload(source)["id"])
 

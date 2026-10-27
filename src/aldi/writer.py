@@ -22,10 +22,15 @@ _MARKDOWN_SPECIALS = re.compile(r"([\\`*_{}\[\]<>#+\-!|~^$])")
 _ORDERED_LIST_START = re.compile(r"^(\d+)([.)])")
 
 
+_FAILED_PAGE = "Esta página no se pudo traducir"
+
+
 @dataclass(frozen=True)
 class TranslatedPage:
     number: int
     texts: list[str]
+    failed_image: Path | None = None
+    """For a Failed Page, the original page's image, relative to the folder the Reading Version is written in."""
 
 
 def write_reading_version(pages: Sequence[TranslatedPage], folder: Path, stem: str) -> tuple[Path, Path]:
@@ -37,7 +42,9 @@ def write_reading_version(pages: Sequence[TranslatedPage], folder: Path, stem: s
     typ.write_text(_TYPST_PREAMBLE + "\n" + body, encoding="utf-8")
     # The fonts bundled with Typst cover Spanish and Portuguese; her system's fonts would make the PDF vary.
     typst.compile(typ, output=pdf, root=folder, ignore_system_fonts=True)
-    pypandoc.convert_text(markdown, "docx", format=_MARKDOWN, outputfile=str(docx))
+    pypandoc.convert_text(
+        markdown, "docx", format=_MARKDOWN, outputfile=str(docx), extra_args=[f"--resource-path={folder}"]
+    )
     return pdf, docx
 
 
@@ -45,6 +52,9 @@ def to_markdown(pages: Sequence[TranslatedPage]) -> str:
     paragraphs = []
     for page in pages:
         paragraphs.append(f"*p. {page.number} del original*")
+        if page.failed_image:
+            paragraphs.append(f"![]({page.failed_image.as_posix()}){{width=100%}}")
+            paragraphs.append(f"**{_FAILED_PAGE}**")
         paragraphs.extend(_escape(text) for text in page.texts if text.strip())
     return "\n\n".join(paragraphs) + "\n"
 
