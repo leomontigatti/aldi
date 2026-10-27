@@ -10,8 +10,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from aldi import reports
-from aldi.blocks import Block, Kind
-from aldi.reading import translate_page
+from aldi.blocks import Block
+from aldi.reading import PAGE_BATCH, read_page_batch, translate_page
 from aldi.reports import Context, Reporter
 from aldi.results import deliver, document_name
 from aldi.source import SourcePage, read_pages, render_page
@@ -126,13 +126,19 @@ class JobStore:
             translated = []
             failed = []
             failure = None
-            for page in source:
-                done = folder / "pages" / f"{page.number:04d}.json"
+            for index, page in enumerate(source):
+                done = _page_file(folder, page.number)
                 if not done.exists():
                     if self._closing.is_set():
                         return
-                    saved = self._translate(page, terms)
-                    done.write_text(json.dumps(saved, ensure_ascii=False), encoding="utf-8")
+                    batch = _page_batch(source[index:], folder) if page.scanned else [page]
+                    answers = (
+                        self._read_scanned(batch, folder, terms) if page.scanned else [self._translate(page, terms)]
+                    )
+                    for batch_page, answer in zip(batch, answers, strict=True):
+                        _page_file(folder, batch_page.number).write_text(
+                            json.dumps(answer, ensure_ascii=False), encoding="utf-8"
+                        )
                 saved = json.loads(done.read_text(encoding="utf-8"))
                 terms = saved["terms"]
                 if saved.get("failed"):
@@ -183,16 +189,33 @@ class JobStore:
                 last = exception
                 continue
             return {"blocks": [asdict(block) for block in spanish.blocks], "terms": after}
-        error = "".join(traceback.format_exception(last))
-        # What its Error Report will say, redacted now; a page that failed on a 503 or a refused key gets none.
-        report = asdict(reports.describe(last)) if reports.is_bug(last) else None
-        return {"failed": True, "error": error, "report": report, "terms": terms}
+        return _failed_page(last, terms)
+
+    def _read_scanned(self, pages: Sequence[SourcePage], folder: Path, terms: dict[str, str]) -> Sequence[dict]:
+        """What each scanned page's `pages/NNNN.json` holds once it is done, Failed Page or not."""
+        for _ in range(_ATTEMPTS if len(pages) == 1 else 1):
+            try:
+                translated, after = read_page_batch(pages, folder / "source.pdf", folder, self._translator, terms)
+            except (QuotaExhausted, Offline):
+                raise
+            except Exception as exception:
+                last = exception
+                continue
+            return [{"blocks": [asdict(block) for block in page.blocks], "terms": after} for page in translated]
+        if len(pages) == 1:
+            return [_failed_page(last, terms)]
+        # A Page Batch that failed is read again a page at a time: alone, a page cannot go missing or be merged.
+        answers = []
+        for page in pages:
+            answers += self._read_scanned([page], folder, terms)
+            terms = answers[-1]["terms"]
+        return answers
 
     def _report(
         self, problem: str, details: reports.ErrorDetails, source: Sequence[SourcePage], failed: Sequence[int]
     ) -> str:
         """Files an Error Report about this Job; returns what she is told about it."""
-        with_text = sum(1 for page in source if any(block.kind != Kind.FIGURE for block in page.blocks))
+        with_text = sum(1 for page in source if not page.scanned)
         if not source:
             kind = "unknown"
         elif with_text == len(source):
@@ -225,3 +248,25 @@ class JobStore:
 
     def _folder(self, job_id: str) -> Path:
         return self._jobs_dir / job_id
+
+
+def _page_file(folder: Path, number: int) -> Path:
+    return folder / "pages" / f"{number:04d}.json"
+
+
+def _page_batch(pages: Sequence[SourcePage], folder: Path) -> list[SourcePage]:
+    """The next Page Batch: the scanned pages not done yet that follow one another from the first of `pages`."""
+    batch = []
+    for page in pages[:PAGE_BATCH]:
+        if not page.scanned or _page_file(folder, page.number).exists():
+            break
+        batch.append(page)
+    return batch
+
+
+def _failed_page(error: Exception, terms: dict[str, str]) -> dict:
+    """What a Failed Page's `pages/NNNN.json` holds."""
+    trace = "".join(traceback.format_exception(error))
+    # What its Error Report will say, redacted now; a page that failed on a 503 or a refused key gets none.
+    report = asdict(reports.describe(error)) if reports.is_bug(error) else None
+    return {"failed": True, "error": trace, "report": report, "terms": terms}

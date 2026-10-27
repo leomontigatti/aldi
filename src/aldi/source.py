@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pymupdf
 
-from aldi.blocks import Block, Kind, plain
+from aldi.blocks import Block, Kind, captions_under_figures, plain
 
 
 class NotAPdfError(ValueError):
@@ -19,7 +19,9 @@ class SourcePage:
     number: int
     """The page's number in the original, from 1."""
     blocks: list[Block]
-    """The page's content in reading order, in the original language."""
+    """The page's content in reading order, in the original language; none for a scanned page."""
+    scanned: bool = False
+    """The page is a photo with no text layer: Gemini reads its image."""
 
 
 # Ligatures (`ﬁ`) come out as the letters they join, which is what a translator and a search expect.
@@ -35,6 +37,8 @@ _REFERENCES_TITLE = re.compile(
 )
 _PAGE_NUMBER = re.compile(r"[\divxlc]+", re.IGNORECASE)
 _TYPST_IMAGES = {"png", "jpeg", "jpg", "gif"}
+# A scan is rarely sharper than this: higher only makes the images Gemini reads and the crops larger.
+_DPI = 150
 
 
 def read_pages(path: Path, folder: Path) -> list[SourcePage]:
@@ -46,7 +50,8 @@ def read_pages(path: Path, folder: Path) -> list[SourcePage]:
     with document:
         if not document.is_pdf:
             raise NotAPdfError(path.name)
-        pages = [_read_items(page, folder) for page in document]
+        scanned = {page.number + 1 for page in document if _is_scanned(page)}
+        pages = [[] if page.number + 1 in scanned else _read_items(page, folder) for page in document]
     body_size = _body_size(pages)
     running = _running_texts(pages)
     in_references = False
@@ -60,8 +65,12 @@ def read_pages(path: Path, folder: Path) -> list[SourcePage]:
             elif block.kind == Kind.PARAGRAPH and in_references:
                 block = replace(block, kind=Kind.REFERENCE)
             blocks.append(block)
-        result.append(SourcePage(number, _captions_under_figures(blocks)))
+        result.append(SourcePage(number, captions_under_figures(blocks), scanned=number in scanned))
     return result
+
+
+def _is_scanned(page: pymupdf.Page) -> bool:
+    return not page.get_text().strip() and bool(page.get_images())
 
 
 @dataclass
@@ -221,16 +230,21 @@ def _classify(item: _Item, body_size: float, running: set[str]) -> Block:
     return block
 
 
-def _captions_under_figures(blocks: list[Block]) -> list[Block]:
-    """A Figure's caption printed above it moves below it, where the writer looks for it."""
-    blocks = list(blocks)
-    for index in range(len(blocks) - 1):
-        if blocks[index].kind == Kind.CAPTION and blocks[index + 1].kind == Kind.FIGURE:
-            blocks[index], blocks[index + 1] = blocks[index + 1], blocks[index]
-    return blocks
-
-
 def render_page(path: Path, number: int, image: Path) -> None:
     """Writes page `number` (from 1) of the PDF at `path` as a PNG image."""
+    image.write_bytes(page_image(path, number))
+
+
+def page_image(path: Path, number: int, box: tuple[int, int, int, int] | None = None) -> bytes:
+    """Page `number` (from 1) of the PDF at `path` as a PNG image; only the part inside `box` when given.
+
+    `box` is x0, y0, x1, y1, normalized 0 to 1000 like a Figure's.
+    """
     with pymupdf.open(path, filetype="pdf") as document:
-        document[number - 1].get_pixmap(dpi=150).save(image)
+        page = document[number - 1]
+        clip = None
+        if box:
+            x0, y0, x1, y1 = box
+            width, height = page.rect.width / 1000, page.rect.height / 1000
+            clip = pymupdf.Rect(x0 * width, y0 * height, x1 * width, y1 * height)
+        return page.get_pixmap(dpi=_DPI, clip=clip).tobytes("png")

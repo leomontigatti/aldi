@@ -4,6 +4,10 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Protocol
 
+from pydantic import BaseModel
+
+from aldi.blocks import Kind
+
 
 @dataclass(frozen=True)
 class TextTranslation:
@@ -13,11 +17,48 @@ class TextTranslation:
     terms: dict[str, str] = field(default_factory=dict)
 
 
+class Term(BaseModel):
+    original: str
+    spanish: str
+
+
+class AnswerBlock(BaseModel):
+    kind: Kind
+    text: str = ""
+    """The Spanish, inline Markdown like `aldi.blocks.Block.text`; empty for a Figure, a reference or furniture."""
+    rows: list[list[str]] = []
+    """A table's cells in Spanish, row by row, the first row its header."""
+    box_2d: list[int] = []
+    """Where a Figure or a reference is on its page: ymin, xmin, ymax, xmax, normalized 0 to 1000."""
+
+
+class AnswerPage(BaseModel):
+    page: int
+    """The page's number, as the request labelled its image."""
+    blocks: list[AnswerBlock]
+    """The page's content in reading order."""
+
+
+class PageBatchAnswer(BaseModel):
+    """What Gemini answers for a Page Batch: the Spanish of each page sent, and the terms those pages add."""
+
+    pages: list[AnswerPage]
+    terms: list[Term]
+
+
 class Translator(Protocol):
     def translate_texts(self, texts: Sequence[str], terms: Mapping[str, str]) -> TextTranslation:
         """Translate text blocks taken from a Born-digital PDF's text layer into Spanish.
 
         Each text is inline Markdown (`aldi.blocks.Block.text`); its Spanish keeps the same emphasis and escapes.
+        """
+        ...
+
+    def read_page_batch(self, pages: Sequence[tuple[int, bytes]], terms: Mapping[str, str]) -> str:
+        """Read a Page Batch of a Scanned PDF, each page its number and its PNG image, and translate it into Spanish.
+
+        Returns the answer as Gemini gave it, JSON meant to match `PageBatchAnswer`: the reading pipeline checks it,
+        since nothing in it can be taken on trust.
         """
         ...
 
