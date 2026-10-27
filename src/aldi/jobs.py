@@ -348,6 +348,9 @@ class JobStore:
         except Closing:
             return
         except Exception as error:
+            if self._stopping(job_id):
+                # What a Job stopped mid-step raises, such as BabelDOC's process ended under it, is no bug.
+                return
             (folder / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
             details = reports.describe(error)
             notice = self._report(job_id, problem, details, scanned, []) if reports.is_bug(error) else ""

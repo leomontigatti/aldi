@@ -1,12 +1,13 @@
 """The reading pipeline: a Source Document's page turned into Spanish blocks."""
 
+import re
 from collections.abc import Sequence
 from dataclasses import replace
 from pathlib import Path
 
 from pydantic import ValidationError
 
-from aldi.blocks import TRANSLATED, Block, Kind, captions_under_figures, has_emphasis, without_emphasis
+from aldi.blocks import TRANSLATED, Block, Kind, captions_under_figures, has_emphasis
 from aldi.source import SourcePage, page_image
 from aldi.translator import AnswerBlock, PageBatchAnswer, Translator
 from aldi.writer import TranslatedPage
@@ -16,6 +17,10 @@ PAGE_BATCH = 4
 
 # A box narrower than this once it is clipped to the page holds nothing to crop: Gemini placed it wrong.
 _MIN_SIDE = 5
+# An escape, or an emphasis mark, in a block's inline Markdown.
+_MARK = re.compile(r"\\(.)|\*")
+# A literal `*` on either side of some text, as Gemini writes the emphasis it adds.
+_STAR_PAIR = re.compile(r"(?<!\\)\\\*(?=\S)(.+?)(?<=\S)\\\*")
 
 
 class UnusableAnswer(ValueError):
@@ -36,8 +41,7 @@ def translate_page(
         if not text:
             return text
         original, result = next(queue)
-        # Emphasis comes from the original's fonts only; a translator that adds some is not believed.
-        return result if has_emphasis(original) else without_emphasis(result)
+        return _marked_as(original, result)
 
     blocks = []
     for block in page.blocks:
@@ -47,6 +51,31 @@ def translate_page(
             block = replace(block, text=translated(block.text))
         blocks.append(block)
     return TranslatedPage(page.number, blocks), answer.terms
+
+
+def _marked_as(original: str, spanish: str) -> str:
+    """The translator's Spanish with only the marks the original has. Emphasis comes from the original's fonts, so
+    a translator that adds some is not believed, nor the literal `*`s beyond the original's: Gemini writes its own
+    emphasis escaped too, `\\*so\\*`. An escape of any other character, such as `\\[`, is that character."""
+    emphasis = has_emphasis(original)
+    if _stars(spanish) > _stars(original):
+        spanish = _STAR_PAIR.sub(r"\1", spanish)
+    stars = _stars(spanish) <= _stars(original)
+
+    def mark(match: re.Match) -> str:
+        escaped = match.group(1)
+        if escaped is None:
+            return "*" if emphasis else ""
+        if escaped == "*":
+            return match.group(0) if stars else ""
+        return match.group(0) if escaped == "\\" else escaped
+
+    return _MARK.sub(mark, spanish)
+
+
+def _stars(text: str) -> int:
+    """How many literal `*` the inline Markdown holds."""
+    return sum(match.group(1) == "*" for match in _MARK.finditer(text))
 
 
 def _texts(block: Block) -> list[str]:

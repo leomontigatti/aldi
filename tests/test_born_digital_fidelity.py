@@ -486,3 +486,140 @@ def test_the_right_column_comes_before_a_references_title_set_under_both_columns
     sent = [text for request in translator.requests for text in request]
     assert "The right column adds the outcomes." in sent
     assert not any("Smith J" in text for text in sent)
+
+
+@pytest.mark.parametrize(
+    "original",
+    ["The lesion is shown.", "The **lesion** is shown.", "* The lesion is shown."],
+    ids=["plain", "bold", "footnote star"],
+)
+def test_emphasis_the_translator_adds_as_escaped_marks_is_dropped_cleanly(
+    app, translator, documents_dir, tmp_path, original
+):
+    # Bug: Gemini wrote its emphasis as `\*…\*` and a bracket as `\[`, which printed as asterisks and backslashes.
+    document = pymupdf.open()
+    document.new_page().insert_htmlbox(
+        pymupdf.Rect(50, 60, 545, 200), "<p>" + original.replace("**lesion**", "<b>lesion</b>") + "</p>"
+    )
+    document.save(source := tmp_path / "Lesión.pdf")
+    translate = translator.translate_texts
+    answer = r"ES: la \*lesión cervical no cariosa (LCNC)\* y la unión \[\*JCE\*\]"
+    translator.translate_texts = lambda texts, terms: TextTranslation(
+        [answer for _text in texts], translate(texts, terms).terms
+    )
+
+    app.wait_for(app.upload(source)["id"])
+
+    folder = documents_dir / "Aldi" / "Lesión"
+    for text in (pdf_text(folder / "Lesión (es).pdf"), docx_text(folder / "Lesión (es).docx")):
+        assert "ES: la lesión cervical no cariosa (LCNC) y la unión [JCE]" in text
+        assert "*" not in text.replace("* ES:", "")
+        assert "\\" not in text
+
+
+def test_each_reference_entry_is_its_own_paragraph(app, translator, documents_dir, tmp_path):
+    # Bug: the references list, one text block on the page, came out as one run-together paragraph.
+    document = pymupdf.open()
+    page = document.new_page()
+    page.insert_textbox(pymupdf.Rect(50, 60, 545, 200), "Sealants prevent caries in the first molars.", fontsize=10)
+    page.insert_text((50, 230), "References", fontsize=14)
+    entries = [
+        "1. Smith J, Muñoz A. Fluoride and caries in a cohort of children followed for ten years. Caries Res. "
+        "2020;54:1-9.",
+        "2. Corrêa M. Selantes em molares permanentes de crianças em idade escolar. Rev Odontol. 2019;12:33-40.",
+        "3. Lee K. Sealants. J Dent. 2018;3:1-2.",
+    ]
+    page.insert_textbox(pymupdf.Rect(50, 245, 400, 600), "\n".join(entries), fontsize=8)
+    document.save(source := tmp_path / "Selantes.pdf")
+
+    app.wait_for(app.upload(source)["id"])
+
+    paragraphs = [text for text, _item in docx_paragraphs(documents_dir / "Aldi" / "Selantes" / "Selantes (es).docx")]
+    for number, entry in enumerate(entries, start=1):
+        (paragraph,) = [p for p in paragraphs if p.startswith(f"{number}.")]
+        assert paragraph == entry
+    assert not any("Smith J" in text for request in translator.requests for text in request)
+
+
+def test_a_page_range_of_references_only_keeps_them_as_untranslated_references(app, translator, tmp_path):
+    # Bug: with no body text on the chosen pages the body size was 0, so every short reference became a heading,
+    # translated.
+    document = pymupdf.open()
+    document.new_page().insert_textbox(
+        pymupdf.Rect(50, 60, 545, 400), "The body text of the article is set at ten points. " * 6, fontsize=10
+    )
+    page = document.new_page()
+    page.insert_text((50, 70), "References", fontsize=10)
+    for number, y in enumerate(range(90, 200, 20), start=1):
+        page.insert_text((50, y), f"{number}. Smith J. Caries {number}. Caries Res. 2020;54:{number}.", fontsize=8)
+    document.save(source := tmp_path / "Referencias.pdf")
+
+    app.wait_for(app.upload(source, pages="2")["id"])
+
+    sent = [text for request in translator.requests for text in request]
+    assert sent == ["References"]
+
+
+def test_a_page_of_only_a_figure_keeps_its_caption_as_a_caption(app, documents_dir, tmp_path):
+    document = pymupdf.open()
+    page = document.new_page()
+    photo = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 60, 60), False)
+    photo.set_rect(photo.irect, (200, 120, 90))
+    page.insert_image(pymupdf.Rect(100, 100, 450, 400), pixmap=photo)
+    page.insert_text((100, 420), "Figure 3. A molar.", fontsize=9)
+    document.save(source := tmp_path / "Figura.pdf")
+
+    app.wait_for(app.upload(source)["id"])
+
+    xml = docx_xml(documents_dir / "Aldi" / "Figura" / "Figura (es).docx")
+    paragraphs = [p for p in re.findall(r"<w:p[ >].*?</w:p>", xml) if "ES: Figure 3." in p]
+    assert not any("Heading" in paragraph for paragraph in paragraphs)
+    assert any("Caption" in paragraph for paragraph in paragraphs)
+
+
+def test_a_subheading_at_the_foot_of_the_left_column_is_read_there_above_a_figure(app, translator, tmp_path):
+    # Bug: a single left-column line under both columns was read after the right column before anything set across
+    # the page, a Figure too.
+    document = pymupdf.open()
+    page = document.new_page()
+    page.insert_textbox(pymupdf.Rect(50, 60, 285, 200), "The left column describes the flap. " * 4, fontsize=10)
+    page.insert_textbox(pymupdf.Rect(310, 60, 545, 120), "The right column describes the graft.", fontsize=10)
+    page.insert_text((50, 230), "Restorative step", fontsize=12)
+    photo = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 60, 60), False)
+    photo.set_rect(photo.irect, (200, 120, 90))
+    page.insert_image(pymupdf.Rect(50, 260, 545, 500), pixmap=photo)
+    document.save(source := tmp_path / "Pasos.pdf")
+
+    app.wait_for(app.upload(source)["id"])
+
+    sent = [text for request in translator.requests for text in request]
+    assert sent.index("Restorative step") < sent.index("The right column describes the graft.")
+
+
+def test_a_ruled_table_of_symbols_stays_a_table_with_its_labels_translated(app, translator, documents_dir, tmp_path):
+    # Bug: a table of `+`, `–` and `✓` cells read as panel letters, and its ruling then passed as a drawn Figure,
+    # so its row labels stayed in English inside a picture.
+    rows = [
+        ["Technique", "1", "2", "3", "4"],
+        ["Flap", "+", "–", "✓", "+"],
+        ["Graft", "–", "+", "+", "✓"],
+        ["Resin", "✓", "–", "+", "–"],
+    ]
+    document = pymupdf.open()
+    page = document.new_page()
+    page.insert_text((50, 60), "The table compares the techniques.", fontsize=11)
+    columns = (50, 200, 260, 320, 380, 440)
+    for row_number, row in enumerate(rows):
+        y = 100 + row_number * 20
+        for left, right, cell in zip(columns, columns[1:], row, strict=False):
+            page.draw_rect(pymupdf.Rect(left, y, right, y + 20), color=(0, 0, 0), width=0.5)
+            page.insert_text((left + 4, y + 14), cell, fontsize=10, fontname="helv")
+    document.save(source := tmp_path / "Tabla.pdf")
+
+    app.wait_for(app.upload(source)["id"])
+
+    docx = documents_dir / "Aldi" / "Tabla" / "Tabla (es).docx"
+    assert not [name for name in zipfile.ZipFile(docx).namelist() if name.startswith("word/media/")]
+    assert "<w:tbl>" in docx_xml(docx)
+    sent = [text for request in translator.requests for text in request]
+    assert {"Flap", "Graft", "Resin"} <= set(sent)

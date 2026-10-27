@@ -39,6 +39,10 @@ _REFERENCES_TITLE = re.compile(
     re.IGNORECASE,
 )
 _PAGE_NUMBER = re.compile(r"[\divxlc]+", re.IGNORECASE)
+# A numbered references list's entry starts `1.` or `[1]`.
+_REFERENCE_NUMBER = re.compile(r"\s*(?:\d{1,3}\.|\[\d{1,3}\])\s")
+# How far right of the list's first line an entry's number may start: its continuation lines sit further in.
+_HANGING_INDENT = 6
 # A list item's printed marker: a bullet, or an enumerator such as `1.`, `1)`, `a)`, `(1)` or `ii.`.
 _LIST_MARKER = re.compile(r"(?:[•◦▪]|\d{1,3}[.)]|[a-z]\)|\(\d{1,3}\)|[ivx]{1,4}\.)\s+")
 _TYPST_IMAGES = {"png", "jpeg", "jpg", "gif"}
@@ -48,7 +52,7 @@ _DPI = 150
 _FIGURE_SIDE = 50
 # A table at least this share of whose area lies over a photo is lines drawn on the photo.
 _OVER_IMAGE = 0.5
-# Fewer of a table's cells than this share holding more than one character: panel letters, not a table.
+# Fewer of a table's cells than this share holding more than a letter: panel letters, not a table.
 _TABLE_CELLS = 0.25
 # A text block of this many words ending like a sentence is prose, not a Figure's label.
 _SENTENCE_WORDS = 4
@@ -90,7 +94,8 @@ def read_pages(path: Path, folder: Path, numbers: Collection[int] | None = None)
             if block.kind == Kind.HEADING:
                 in_references = bool(_REFERENCES_TITLE.fullmatch(plain(block.text)))
             elif block.kind == Kind.PARAGRAPH and in_references:
-                block = replace(block, kind=Kind.REFERENCE)
+                blocks += [Block(Kind.REFERENCE, text=entry) for entry in _entries(item.lines)]
+                continue
             elif block.kind == Kind.PARAGRAPH and (marker := _LIST_MARKER.match(block.text)):
                 # The writer prints its own bullet.
                 block = replace(block, kind=Kind.LIST_ITEM, text=block.text[marker.end() :])
@@ -122,14 +127,16 @@ class _Item:
     size: float = 0
     """The text's dominant font size, 0 for a Figure or a table."""
     sizes: Counter = field(default_factory=Counter)
+    lines: list[dict] = field(default_factory=list)
+    """The text's lines as PyMuPDF reads them."""
 
 
 def _read_items(page: pymupdf.Page, folder: Path) -> list[_Item]:
     items = []
     blocks = page.get_text("dict", flags=_TEXT_FLAGS)["blocks"]
     images = [pymupdf.Rect(block["bbox"]) for block in blocks if block["type"] == 1]
-    tables = _tables(page, images)
-    drawn = _drawn_figures(page, blocks, list(tables))
+    tables, grids = _tables(page, images)
+    drawn = _drawn_figures(page, blocks, grids)
     # A table drawn inside a Figure, such as two boxes of a decision tree side by side, is part of the Figure.
     tables = {rect: rows for rect, rows in tables.items() if not any(figure.contains(rect) for figure in drawn)}
     for rect, rows in tables.items():
@@ -160,28 +167,39 @@ def _read_items(page: pymupdf.Page, folder: Path) -> list[_Item]:
             sizes = Counter()
             for span in spans:
                 sizes[round(span["size"] * 2) / 2] += len(span["text"].strip())
-            item = _Item(rect, page.rect, Block(Kind.PARAGRAPH, text=text), sizes.most_common(1)[0][0], sizes)
+            size = sizes.most_common(1)[0][0]
+            item = _Item(rect, page.rect, Block(Kind.PARAGRAPH, text=text), size, sizes, block["lines"])
             items.append(item)
     return _reading_order(items, page.rect.width)
 
 
-def _tables(page: pymupdf.Page, images: list[pymupdf.Rect]) -> dict[pymupdf.Rect, list[list[str]]]:
-    """Where the page has a table, and its cells' text, row by row."""
-    tables = {}
+def _tables(
+    page: pymupdf.Page, images: list[pymupdf.Rect]
+) -> tuple[dict[pymupdf.Rect, list[list[str]]], list[pymupdf.Rect]]:
+    """Where the page has a table, and its cells' text, row by row; and every ruled grid not drawn over a photo
+    whose cells hold text, tables or not: none of them is a drawn Figure."""
+    tables, grids = {}, []
     for table in page.find_tables().tables:
+        rect = pymupdf.Rect(table.bbox)
         rows = [[_escape(" ".join((cell or "").split())) for cell in row] for row in table.extract()]
-        if table.row_count and _is_table(pymupdf.Rect(table.bbox), rows, images):
-            tables[pymupdf.Rect(table.bbox)] = rows
-    return tables
+        if table.row_count and _is_table(rect, rows, images):
+            tables[rect] = rows
+        if not _over_image(rect, images) and any(cell for row in rows for cell in row):
+            grids.append(rect)
+    return tables, grids
+
+
+def _over_image(rect: pymupdf.Rect, images: list[pymupdf.Rect]) -> bool:
+    return any((rect & image).get_area() >= rect.get_area() * _OVER_IMAGE for image in images)
 
 
 def _is_table(rect: pymupdf.Rect, rows: list[list[str]], images: list[pymupdf.Rect]) -> bool:
     """Whether what `find_tables` found reads as a table: not lines drawn over a photo, such as the bars between the
-    tiles of a photo grid, and with cells that hold more than a panel letter."""
-    if any((rect & image).get_area() >= rect.get_area() * _OVER_IMAGE for image in images):
+    tiles of a photo grid, and with cells that hold more than a panel letter: words, numbers or symbols."""
+    if _over_image(rect, images):
         return False
-    cells = [cell for row in rows for cell in row]
-    return sum(len(plain(cell)) > 1 for cell in cells) >= len(cells) * _TABLE_CELLS
+    cells = [plain(cell) for row in rows for cell in row]
+    return sum(len(cell) > 1 or (cell != "" and not cell.isalpha()) for cell in cells) >= len(cells) * _TABLE_CELLS
 
 
 def _drawn_figures(page: pymupdf.Page, blocks: list[dict], tables: list[pymupdf.Rect]) -> list[pymupdf.Rect]:
@@ -331,7 +349,7 @@ def _reading_order(items: list[_Item], width: float) -> list[_Item]:
     ordered, section = [], []
     for item in sorted(items, key=lambda item: (item.rect.y0, item.rect.x0)):
         if column(item) is None:
-            title = section[-1:] if _titles(section) else []
+            title = section[-1:] if _titles(section, item) else []
             ordered += sorted(section[: len(section) - len(title)], key=lambda item: (column(item), item.rect.y0))
             ordered += [*title, item]
             section = []
@@ -340,21 +358,29 @@ def _reading_order(items: list[_Item], width: float) -> list[_Item]:
     return ordered + sorted(section, key=lambda item: (column(item), item.rect.y0))
 
 
-def _titles(section: list[_Item]) -> bool:
-    """Whether the section's last item, in the order its items start, is the title of what follows it across the
-    page: one line below everything in both columns, such as `References` over a list set across the page."""
+def _titles(section: list[_Item], following: _Item) -> bool:
+    """Whether the section's last item, in the order its items start, is the title of the text that follows it
+    across the page: one line below everything in both columns, a references title or a heading, such as
+    `References` over a list set across the page. A line over a Figure or a table stays in its column."""
     *others, last = section or [None]
-    return bool(others) and last.rect.y0 >= max(other.rect.y1 for other in others) and last.rect.height < 2 * last.size
+    if not others or following.block.kind != Kind.PARAGRAPH:
+        return False
+    if last.rect.y0 < max(other.rect.y1 for other in others) or last.rect.height >= 2 * last.size:
+        return False
+    text = last.block.text
+    heading = last.size >= following.size * _HEADING_SIZE or (text.startswith("**") and text.endswith("**"))
+    return heading or bool(_REFERENCES_TITLE.fullmatch(plain(text)))
 
 
 def _body_size(pages: list[list[_Item]]) -> float:
     """The size most of the running text is set in. Captions, the margins and a references list are often set
     smaller, and a few pages of references would otherwise outweigh the body: a references list runs from its
     title to the next text as large as the title."""
-    sizes = Counter()
+    sizes, every = Counter(), Counter()
     references = 0.0
     for items in pages:
         for item in items:
+            every.update(item.sizes)
             text = plain(item.block.text)
             if _REFERENCES_TITLE.fullmatch(text):
                 references = item.size
@@ -362,7 +388,21 @@ def _body_size(pages: list[list[_Item]]) -> float:
                 references = 0
             if not references and not _in_margin(item.rect, item.page) and not _CAPTION.match(text):
                 sizes.update(item.sizes)
-    return sizes.most_common(1)[0][0] if sizes else 0
+    # Pages with no body text, such as a caption alone or a references list, take their own most common size.
+    return (sizes or every).most_common(1)[0][0] if sizes or every else 0
+
+
+def _entries(lines: list[dict]) -> list[str]:
+    """A references list's text block as its entries' inline Markdown: in a numbered list each entry starts at a
+    line that starts with its number, left of the lines that continue an entry; otherwise the block is one entry."""
+    left = lines[0]["bbox"][0] + _HANGING_INDENT
+    entries: list[list[dict]] = []
+    for line in lines:
+        text = "".join(span["text"] for span in line["spans"])
+        if not entries or (line["bbox"][0] <= left and _REFERENCE_NUMBER.match(text)):
+            entries.append([])
+        entries[-1].append(line)
+    return [_inline(entry) for entry in entries]
 
 
 def _in_margin(rect: pymupdf.Rect, page: pymupdf.Rect) -> bool:

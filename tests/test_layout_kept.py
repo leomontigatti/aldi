@@ -253,6 +253,28 @@ def test_cancelling_mantener_el_diseno_ends_babeldoc_and_drops_the_job(app, tran
     assert not documents_dir.exists()
 
 
+@pytest.mark.filterwarnings("error::pytest.PytestUnhandledThreadExceptionWarning")
+def test_an_answer_that_fails_after_she_cancelled_ends_the_job_quietly(app, translator, github, tmp_path):
+    # Bug: the error handler looked up the cancelled Job, and its thread crashed instead of stopping.
+    asked, cancelled = threading.Event(), threading.Event()
+
+    def fails_once_cancelled(prompt, waited=0):
+        asked.set()
+        cancelled.wait(timeout=60)
+        raise RuntimeError("the request ended with the Job")
+
+    translator.answer_layout_prompt = fails_once_cancelled
+    document = app.drop(three_pages(tmp_path))
+    started = app.send("POST", "/api/jobs", {"document": document["id"], "pages": "1", "output_mode": "layout"})
+    assert asked.wait(timeout=180)
+
+    app.send("POST", f"/api/jobs/{started['id']}/cancel")
+    cancelled.set()
+
+    wait_until(lambda: not (tmp_path / "data" / "jobs" / started["id"]).exists(), timeout=10)
+    assert github.reports() == []
+
+
 def test_any_other_gemini_error_in_mantener_el_diseno_fails_the_job_and_reports_it(
     app, translator, github, documents_dir, tmp_path
 ):
