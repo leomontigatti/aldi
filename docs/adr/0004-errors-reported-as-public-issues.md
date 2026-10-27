@@ -23,9 +23,9 @@ and tells her only `Algo salió mal. Ya se envió un informe para que lo arregle
 - **One issue per problem**: a fingerprint of the error finds an open issue for the same problem, and a repeat
   becomes a comment on it. A daily cap stops a loop from flooding the tracker.
 - **Labels**: `bug`, `needs-triage`, `source:app`.
-- **The token** is a fine-grained GitHub token that can only write issues on this repo, entered once at install
-  and kept beside the Gemini key. With no token, or offline, reports wait in a queue and go out later. Before the
-  token expires the app opens an issue for the user (not for her) to renew it.
+- **The token** is a fine-grained GitHub token that can only write issues on this repo, entered once at install.
+  With no token, or offline, reports wait in a queue and go out later. Before the token expires the app opens an
+  issue for the user (not for her) to renew it.
 
 ## Consequences
 

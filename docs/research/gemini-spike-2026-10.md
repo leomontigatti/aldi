@@ -27,7 +27,7 @@ a quarter; their time per page was not measured carefully.
 - flash-lite read 120 dpi pages accurately, followed two columns in order and boxed photos tightly (normalized
   0-1000 boxes, cropped from the page image).
 - A four-page batch asking for the original text and the Spanish came back empty with finish reason
-  `RECITATION`: Gemini will not reproduce copyrighted text verbatim. Asking only for the Spanish passed, and
+  `RECITATION`, Gemini's block on output that repeats a source verbatim. Asking only for the Spanish passed, and
   inline emphasis came back as Markdown.
 - Reference lists were the weakest output in every variant.
 - `max_output_tokens` was set to 65536 so a dense four-page batch fits; the default was not tried.

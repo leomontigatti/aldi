@@ -40,9 +40,10 @@ A second spike, on more of the book and both articles, changed four parts of the
   noticeably better, both in the **Reading Version** and through `pdf2zh-next`; flash-lite stays as the next
   model when flash's quota runs out.
 - **A Page Batch returns only the Spanish and the Figure boxes, never a transcription of the original.** Gemini
-  blocked a four-page batch that asked for both (finish reason `RECITATION`): it refuses to reproduce
-  copyrighted text verbatim. Asking only for the translation passes.
+  blocked a four-page batch that asked for both with finish reason `RECITATION`, its block on output that
+  repeats a source verbatim. Asking only for the translation passed. Bold and
+  italics come back marked inline in the Spanish.
 - **References are left untranslated.** Every attempt garbled the reference lists, and nobody cites a reference
   in Spanish.
-- **A Term List goes with every Page Batch**, so a term translated one way on page 12 is translated the same way
-  on page 300.
+- **A Term List goes with every Page Batch** and is saved with the **Job**, so a term translated one way on page 12 is translated the same way
+  on page 300. An acronym is translated, with the original in parentheses the first time.

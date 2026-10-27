@@ -48,7 +48,7 @@ _Avoid_: Overlay, mono PDF
 **Reading Version**:
 The **Output Mode** that rebuilds the content as a new, clean document in one column, left-aligned: headings,
 paragraphs, lists, the **Figures** taken from the original with their captions translated, and a **Page Marker**
-where each original page starts. References stay in their original language. Written as a PDF and a DOCX.
+where each original page starts, with the references left in their original language. Written as a PDF and a DOCX.
 _Spanish_: Versión de lectura con imágenes
 _Avoid_: Reflow, rebuild (in the UI)
 
@@ -60,7 +60,7 @@ _Avoid_: Image (for the whole page)
 
 **Release**:
 A version of the app the user has checked and tagged. Her laptop offers to update only to a **Release**.
-_Spanish_: Versión nueva (`Hay una versión nueva`)
+_Spanish_: Versión nueva (`Hay una versión nueva — Actualizar`)
 _Avoid_: Build, commit
 
 **Page Marker**:
@@ -77,14 +77,14 @@ _Spanish_: Traducción
 _Avoid_: Task, run
 
 **Page Batch**:
-The pages of a **Scanned PDF** sent to Gemini in one request (four by default), with the **Term List**: it
-returns each page's text in Spanish only, never a copy of the original, and where its **Figures** are.
+The pages of a **Scanned PDF** that Gemini reads and translates in one request (four by default): it returns
+each page's Spanish and where its **Figures** are.
 _Spanish_: (not shown)
 _Avoid_: Chunk
 
 **Term List**:
-The technical terms and acronyms a **Job** has translated so far, with the Spanish it chose. Sent with every
-**Page Batch** so a term reads the same on every page; an acronym gets its original in parentheses the first time.
+The technical terms and acronyms a **Job** has translated so far, with the Spanish it chose, so a term reads the
+same on every page.
 _Spanish_: (not shown)
 _Avoid_: Glossary (that is this file)
 

@@ -21,7 +21,7 @@ invented bold that was not there and boxed the vector figures badly.
 - A **Born-digital PDF**'s **Reading Version** is built from its own text layer and its own figures; Gemini only
   translates the text. A **Scanned PDF**'s pages are read by Gemini in **Page Batches**.
 - A document that mixes both kinds of page is routed page by page.
-- **Mantener el diseño** (the **Layout-kept Translation**) stays as the second choice, offered only when every
+- The **Layout-kept Translation** (`Mantener el diseño`) stays as the second choice, offered only when every
   page in the **Page Range** has a text layer. It runs `pdf2zh-next` with `gemini-3.5-flash` and without its
   automatic glossary extraction.
 
@@ -31,3 +31,4 @@ invented bold that was not there and boxed the vector figures badly.
   path is only for pages with no text.
 - The **Reading Version** does not look like the original. The **Page Markers** are what tie it back.
 - Text inside a **Figure** stays as printed, in English or Portuguese.
+- No bilingual output (original and Spanish side by side) in the first version.
