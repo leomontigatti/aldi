@@ -100,6 +100,16 @@ def build_scanned_pdf(path: Path, pages: Sequence[Sequence[tuple[tuple[int, int,
     return path
 
 
+def build_mixed_pdf(path: Path, parts: Sequence[Path]) -> Path:
+    """A PDF of the pages of the PDFs at `parts`, one after another: born-digital and scanned ones make it mixed."""
+    document = pymupdf.open()
+    for part in parts:
+        with pymupdf.open(part) as pages:
+            document.insert_pdf(pages)
+    document.save(path)
+    return path
+
+
 class FakeGemini:
     """Stands in for google-genai's client: every model answers each block prefixed with `ES:`, and each page of a Page
     Batch as one paragraph `ES: Page N`, unless `fail` scripted an error for that model's next request. A Gemma model
