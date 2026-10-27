@@ -23,6 +23,7 @@ does not have yet; when a module lands under another name, update its line in th
 full laptop: ^(install\.(ps1|sh)|src/aldi/(install|update|launcher)|scripts/install)
 full key: ^(\.gitignore|t3\.json|src/aldi/(settings|config|keys?|gemini)\b)
 full report: ^src/aldi/(reports?|reporting|errors?)\b
+full files: ^src/aldi/results\b
 full pins: ^(pyproject\.toml|uv\.lock)$
 quiet: ^\.pre-commit-config\.yaml$
 quiet: ^\.github/dependabot\.yml$

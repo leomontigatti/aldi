@@ -1,18 +1,19 @@
 # Verification
 
-How to prove a change she would see: the app window, a **Job**'s progress, the PDF and DOCX it writes. The app
-does not exist yet; the ticket that adds its window adds the `dev` recipe and fills § Launch and § Feature map.
+How to prove a change she would see: the app window, a **Job**'s progress, the PDF and DOCX it writes.
 
 ## Launch
 
-`uv run just dev` (added with the app window) starts the app from this worktree on a free `localhost` port,
-without pywebview's native window, and prints the URL. It reads the key from `.env`. The output of every **Job**
-goes under this worktree's git-ignored `jobs/`.
+`uv run just dev` starts the app from this worktree on a free `127.0.0.1` port, without the native window, and
+prints the URL (`Aldi: http://127.0.0.1:<port>/`). It reads the key from `.env` and stops at once without one.
+Everything a **Job** writes goes under this worktree's git-ignored `jobs/`: each **Job**'s folder in `jobs/jobs/`,
+and the results that would land in her Documents folder in `jobs/Documentos/Aldi/<nombre>/`.
 
 ## Doctor
 
-- Read the app's log in the terminal `dev` runs in; the **Job** folder under `jobs/` holds each page's Gemini
-  response, so a bad page is diagnosed from what Gemini returned, not from guesses.
+- Read the app's log in the terminal `dev` runs in. A **Job**'s folder under `jobs/jobs/<id>/` holds
+  `job.json`, each page's text and Gemini answer in `pages/`, the Markdown and Typst the results were made from,
+  and `error.txt` when the **Job** failed, so a bad page is diagnosed from what Gemini returned, not from guesses.
 - A `429` is quota, not a bug: the **Model Chain** moves on, then a **Quota Pause**. A `503` is Gemini
   overloaded; it retries.
 
@@ -47,4 +48,5 @@ Which flow proves which area. Filled in as each area lands.
 
 | Area | Flow |
 | ---- | ---- |
-| (none yet) | |
+| Reading Version of a **Born-digital PDF** | Drop the PDF (or `Elegir archivo`); the list shows `Traduciendo… Página N de M`, then `Lista` with the results' folder. Open the PDF and DOCX there: Spanish text, one column, left-aligned, a `p. N del original` at each original page. |
+| A file that is not a PDF | Drop it; `Este archivo no es un PDF.` appears under the drop zone and no **Job** starts. |

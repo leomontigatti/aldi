@@ -16,6 +16,19 @@ setup:
     [ -e .env ] || [ -L .env ] || cp .env.example .env
     [ -e samples ] || [ -L samples ] || mkdir samples
 
+# Re-resolve uv.lock after a dependency change in pyproject.toml, then sync
+lock:
+    uv lock
+    uv sync --locked
+
+# The app on a free localhost port, without the native window; jobs and results under this worktree's jobs/
+dev:
+    uv run --locked python -m aldi --data-dir jobs --documents-dir jobs/Documentos
+
+# A two-page Born-digital PDF built like the tests' ones, to drive `dev` without her documents
+test-pdf path="jobs/prueba.pdf":
+    uv run --locked python tests/build_pdf.py {{ quote(path) }}
+
 # All linters and formatters on every file (fixes what it can; rerun to confirm)
 lint:
     uv run pre-commit run --all-files --show-diff-on-failure

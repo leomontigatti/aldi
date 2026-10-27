@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aldi</title>
+<style>
+  :root { font-family: system-ui, sans-serif; color: #222; background: #f6f5f2; }
+  body { max-width: 44rem; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-weight: 600; margin-bottom: .25rem; }
+  p.lead { margin-top: 0; color: #555; }
+  #drop { border: 2px dashed #9a9a9a; border-radius: 12px; padding: 2.5rem 1rem; text-align: center; background: #fff; }
+  #drop.over { border-color: #2a6f97; background: #eef6fb; }
+  button { font: inherit; padding: .5rem 1.1rem; border-radius: 8px; border: 1px solid #2a6f97; background: #2a6f97; color: #fff; cursor: pointer; }
+  #message { color: #a33; min-height: 1.5em; }
+  ul { list-style: none; padding: 0; }
+  li { background: #fff; border-radius: 10px; padding: .8rem 1rem; margin-bottom: .6rem; }
+  .name { font-weight: 600; }
+  .state { color: #555; }
+  .done .state { color: #2d7a3a; }
+  .failed .state { color: #a33; }
+  .folder { font-size: .85rem; color: #666; word-break: break-all; }
+</style>
+</head>
+<body>
+<h1>Aldi</h1>
+<p class="lead">Traduce al español un PDF en inglés o portugués.</p>
+<div id="drop">
+  <p>Arrastra un PDF aquí</p>
+  <p>o</p>
+  <button type="button" id="choose">Elegir archivo</button>
+  <input type="file" id="file" accept="application/pdf,.pdf" hidden>
+</div>
+<p id="message" role="alert"></p>
+<h2>Traducciones</h2>
+<ul id="jobs"></ul>
+<script>
+const drop = document.getElementById("drop");
+const file = document.getElementById("file");
+const message = document.getElementById("message");
+const list = document.getElementById("jobs");
+
+document.getElementById("choose").addEventListener("click", () => file.click());
+file.addEventListener("change", () => { if (file.files[0]) send(file.files[0]); file.value = ""; });
+drop.addEventListener("dragover", (event) => { event.preventDefault(); drop.classList.add("over"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", (event) => {
+  event.preventDefault();
+  drop.classList.remove("over");
+  if (event.dataTransfer.files[0]) send(event.dataTransfer.files[0]);
+});
+
+async function send(pdf) {
+  message.textContent = "";
+  try {
+    const response = await fetch("/api/jobs", {
+      method: "POST",
+      headers: { "X-Filename": encodeURIComponent(pdf.name) },
+      body: pdf,
+    });
+    if (!response.ok) message.textContent = (await response.json()).error;
+  } catch {
+    message.textContent = "No se pudo enviar el archivo.";
+  }
+  refresh();
+}
+
+function describe(job) {
+  if (job.state === "queued") return "En espera";
+  if (job.state === "running") return job.pages ? `Traduciendo… Página ${job.page} de ${job.pages}` : "Traduciendo…";
+  if (job.state === "done") return "Lista";
+  return "Algo salió mal.";
+}
+
+async function refresh() {
+  try {
+    const { jobs } = await (await fetch("/api/jobs")).json();
+    list.replaceChildren(...jobs.slice().reverse().map((job) => {
+      const item = document.createElement("li");
+      item.className = job.state;
+      const name = document.createElement("div");
+      name.className = "name";
+      name.textContent = job.name;
+      const state = document.createElement("div");
+      state.className = "state";
+      state.textContent = describe(job);
+      item.append(name, state);
+      if (job.state === "done") {
+        const folder = document.createElement("div");
+        folder.className = "folder";
+        folder.textContent = `${job.results.join(" y ")} en ${job.folder}`;
+        item.append(folder);
+      }
+      return item;
+    }));
+  } catch {
+    // The next poll tries again.
+  }
+}
+
+refresh();
+setInterval(refresh, 1000);
+</script>
+</body>
+</html>
