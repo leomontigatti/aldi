@@ -8,10 +8,11 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from aldi.reading import translate_page
 from aldi.results import deliver, document_name
 from aldi.source import read_pages
 from aldi.translator import Translator
-from aldi.writer import TranslatedPage, write_reading_version
+from aldi.writer import write_reading_version
 
 
 @dataclass
@@ -63,18 +64,17 @@ class JobStore:
     def _run(self, job_id: str) -> None:
         folder = self._folder(job_id)
         try:
-            source = read_pages(folder / "source.pdf")
+            source = read_pages(folder / "source.pdf", folder)
             self._update(job_id, state="running", pages=len(source))
             terms: dict[str, str] = {}
             translated = []
             for page in source:
-                answer = self._translator.translate_texts(page.texts, terms) if page.texts else None
-                texts = answer.texts if answer else []
-                terms = answer.terms if answer else terms
+                spanish, terms = translate_page(page, self._translator, terms)
                 (folder / "pages" / f"{page.number:04d}.json").write_text(
-                    json.dumps({"source": page.texts, "spanish": texts}, ensure_ascii=False), encoding="utf-8"
+                    json.dumps({"blocks": [asdict(block) for block in spanish.blocks]}, ensure_ascii=False),
+                    encoding="utf-8",
                 )
-                translated.append(TranslatedPage(page.number, texts))
+                translated.append(spanish)
                 self._update(job_id, page=len(translated))
             name = self.get(job_id).name
             stem = f"{name} (es)"

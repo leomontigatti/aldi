@@ -15,5 +15,8 @@ class TextTranslation:
 
 class Translator(Protocol):
     def translate_texts(self, texts: Sequence[str], terms: Mapping[str, str]) -> TextTranslation:
-        """Translate text blocks taken from a Born-digital PDF's text layer into Spanish."""
+        """Translate text blocks taken from a Born-digital PDF's text layer into Spanish.
+
+        Each text is inline Markdown (`aldi.blocks.Block.text`); its Spanish keeps the same emphasis and escapes.
+        """
         ...
