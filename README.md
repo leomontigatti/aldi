@@ -11,11 +11,11 @@ Install it from the latest release with one line, then open Aldi from the deskto
 Applications (macOS). The line asks for the token the app files its error reports with.
 
 ```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/leomontigatti/aldi/main/install.ps1 | iex"
+powershell -ExecutionPolicy ByPass -c "irm https://github.com/leomontigatti/aldi/releases/latest/download/install.ps1 | iex"
 ```
 
 ```sh
-curl -LsSf https://raw.githubusercontent.com/leomontigatti/aldi/main/install.sh | sh
+curl -LsSf https://github.com/leomontigatti/aldi/releases/latest/download/install.sh | sh
 ```
 
 - How it is built and why: [`GLOSSARY.md`](GLOSSARY.md) and [`docs/adr/`](docs/adr/).

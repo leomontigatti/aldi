@@ -1,0 +1,42 @@
+# A Release for the tag the maintainer pushed, with install.ps1 and install.sh attached: the README's install line
+# fetches them from the latest Release, never from main, and her laptop updates to it. It never tags: tagging is
+# the maintainer's step (docs/agents/review.md).
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The app compares the latest Release's tag with its own version: they must be the same number.
+      - name: The tag is v plus pyproject.toml's version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"$/\1/p' pyproject.toml)
+          if [[ $TAG != "v$version" ]]; then
+            echo "::error::The tag $TAG is not v$version, the version in pyproject.toml"
+            exit 1
+          fi
+      - name: The Release, with the install scripts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" install.ps1 install.sh --clobber
+          else
+            gh release create "$TAG" install.ps1 install.sh --verify-tag --generate-notes --title "$TAG"
+          fi

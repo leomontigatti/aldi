@@ -64,6 +64,8 @@ Where this code is likely to be hurt, for the correctness brief:
 ## One-way doors
 
 - A release tag: her laptop installs it on the next update, and a broken one may also break the update button.
+  The tag is `v` plus `pyproject.toml`'s version (the app compares the two), or the release workflow makes no
+  Release of it.
 - Making the key or her documents leave her laptop for anywhere new.
 - An **Error Report** that puts document text, a file name or a key in a public issue: it cannot be unpublished.
 - Deleting anything outside the app's own **Job** folders.

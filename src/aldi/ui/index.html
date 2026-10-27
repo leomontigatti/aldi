@@ -30,6 +30,7 @@
   #key { flex: 1; min-width: 16rem; font: inherit; padding: .5rem; border: 1px solid #9a9a9a; border-radius: 8px; }
   #key-message { color: #a33; min-height: 1.5em; }
   #key-message.ok { color: #2d7a3a; }
+  #update { background: #eef6fb; border-radius: 10px; padding: .6rem 1rem; margin-bottom: 1rem; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -39,6 +40,10 @@
   <button type="button" class="link" id="open-settings" hidden>Ajustes</button>
 </header>
 <p class="lead">Traduce al español un PDF en inglés o portugués.</p>
+<div id="update" hidden>
+  <span id="update-offer">Hay una versión nueva — <button type="button" class="link" id="update-button">Actualizar</button></span>
+  <div id="update-status" class="notice" role="status"></div>
+</div>
 <section id="key-screen" hidden>
   <h2 id="key-title">Antes de empezar: tu clave de Gemini</h2>
   <p id="key-intro">Aldi traduce con Gemini, de Google. Para usarlo necesitas una clave gratuita, que se crea una sola vez:</p>
@@ -223,6 +228,37 @@ document.getElementById("key-form").addEventListener("submit", async (event) => 
   button.disabled = false;
 });
 
+const update = document.getElementById("update");
+const updateOffer = document.getElementById("update-offer");
+const updateStatus = document.getElementById("update-status");
+
+async function checkUpdate() {
+  try {
+    const { available, notice } = await (await fetch("/api/update")).json();
+    updateOffer.hidden = !available;
+    updateStatus.textContent = notice;
+    update.hidden = !available && !notice;
+  } catch {
+    // Without an answer she keeps this version; the next launch asks again.
+  }
+}
+
+document.getElementById("update-button").addEventListener("click", async () => {
+  updateOffer.hidden = true;
+  updateStatus.textContent = "Preparando la actualización… Puede tardar unos minutos.";
+  try {
+    const response = await fetch("/api/update", { method: "POST" });
+    if (response.ok) {
+      updateStatus.textContent = "Aldi se cierra para actualizarse y se abrirá de nuevo en un momento.";
+      return;
+    }
+    updateStatus.textContent = (await response.json()).error;
+  } catch {
+    updateStatus.textContent = "No se pudo actualizar Aldi.";
+  }
+  updateOffer.hidden = false;
+});
+
 async function start() {
   try {
     const { has_key } = await (await fetch("/api/settings")).json();
@@ -233,6 +269,7 @@ async function start() {
   }
   refresh();
   setInterval(refresh, 1000);
+  checkUpdate();
 }
 
 start();

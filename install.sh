@@ -1,6 +1,6 @@
 #!/bin/sh
 # Installs Aldi on macOS:
-#   curl -LsSf https://raw.githubusercontent.com/leomontigatti/aldi/main/install.sh | sh
+#   curl -LsSf https://github.com/leomontigatti/aldi/releases/latest/download/install.sh | sh
 # It installs uv, then Aldi as a uv tool from the latest Release tag with uv.lock's pins, then `aldi setup` saves
 # the reporting token and creates Aldi.app in Applications. A step that fails files an Error Report (ADR 4) that
 # names only the step and the system. Running it again reinstalls the latest Release.
@@ -61,7 +61,7 @@ else
     tag=$(curl -sSfL "https://api.github.com/repos/$REPO/releases/latest" |
         sed -n 's/^ *"tag_name": *"\([^"]*\)".*/\1/p') || true
     [ -n "$tag" ] || fail release "no se encontró la última versión"
-    curl -sSfL -o "$tmp/constraints.txt" "https://raw.githubusercontent.com/$REPO/$tag/install-constraints.txt" ||
+    curl -sSfL -o "$tmp/constraints.txt" "https://raw.githubusercontent.com/$REPO/refs/tags/$tag/install-constraints.txt" ||
         fail release "no se pudo descargar la versión $tag"
     spec="aldi @ https://github.com/$REPO/archive/refs/tags/$tag.tar.gz"
 fi

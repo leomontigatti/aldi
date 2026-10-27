@@ -20,6 +20,14 @@ VALID_KEY = "AIza-valida-1"
 REPORT_TOKEN = "github_pat_11AAprueba"
 
 
+def wait_until(condition, timeout=10):
+    deadline = time.monotonic() + timeout
+    while not condition():
+        if time.monotonic() > deadline:
+            raise AssertionError("timed out")
+        time.sleep(0.02)
+
+
 class FakeTranslator:
     """Stands in for Gemini at the translator seam: each text comes back prefixed with `ES:`.
 
@@ -163,11 +171,14 @@ class FakeKeyCheck:
 
 
 class FakeGitHub:
-    """Stands in for GitHub's issues API on this repo; also the factory the app builds its client with."""
+    """Stands in for GitHub's issues and releases API on this repo; also the factory the app builds its client with."""
 
     def __init__(self):
         self.issues: list[dict] = []
         """Each issue filed: number, title, body, labels, comments and whether it is open."""
+        self.release = "v0.1.0"
+        """The latest Release's tag, the version the tests' app runs."""
+        self.release_checks = 0
         self.offline = False
         self.token_expires = None
         self.tokens: list[str] = []
@@ -192,6 +203,11 @@ class FakeGitHub:
         self._reach()
         self.issues[number - 1]["comments"].append(body)
 
+    def latest_release(self) -> str:
+        self.release_checks += 1
+        self._reach()
+        return self.release
+
     def reports(self) -> list[dict]:
         """The Error Reports filed, without the issues that ask to renew the token."""
         return [issue for issue in self.issues if "bug" in issue["labels"]]
@@ -199,6 +215,24 @@ class FakeGitHub:
     def _reach(self) -> None:
         if self.offline:
             raise GitHubUnavailable("offline")
+
+
+class FakeReinstaller:
+    """Stands in for `uv` reinstalling Aldi: records the Release tags it prepared and restarted into."""
+
+    def __init__(self):
+        self.prepared: list[str] = []
+        self.restarted: list[str] = []
+        self.error: Exception | None = None
+        """Raised by `prepare`, as when the Release cannot be downloaded or built."""
+
+    def prepare(self, tag: str) -> None:
+        self.prepared.append(tag)
+        if self.error:
+            raise self.error
+
+    def restart(self, tag: str) -> None:
+        self.restarted.append(tag)
 
 
 class RunningApp:
@@ -275,6 +309,11 @@ def github():
 
 
 @pytest.fixture
+def reinstaller():
+    return FakeReinstaller()
+
+
+@pytest.fixture
 def documents_dir(tmp_path):
     return tmp_path / "Documentos"
 
@@ -306,10 +345,11 @@ def opened():
 
 
 @pytest.fixture
-def start_app(tmp_path, documents_dir, settings, key_check, translator_keys, opened, github):
+def start_app(tmp_path, documents_dir, settings, key_check, translator_keys, opened, github, reinstaller):
     """Starts the app on this test's data and Documents folders; each call is a fresh start of the same install.
 
-    Each translator the app builds is the given fake, whatever the key.
+    Each translator the app builds is the given fake, whatever the key. The app runs version 0.1.0, installed from
+    a Release.
     """
     running = []
 
@@ -326,6 +366,9 @@ def start_app(tmp_path, documents_dir, settings, key_check, translator_keys, ope
             check_key=key_check,
             open_folder=open_folder,
             make_github=github,
+            latest_release=github.latest_release,
+            reinstaller=reinstaller,
+            version="0.1.0",
             report_interval=0.05,
             host="127.0.0.1",
             port=0,
