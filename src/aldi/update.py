@@ -21,7 +21,7 @@ from importlib import resources
 from pathlib import Path
 from typing import Protocol
 
-from aldi.reports import QUEUED, REPO, SENT, ErrorDetails, Reporter, describe
+from aldi.reports import REPO, ErrorDetails, Reporter, describe
 
 LATEST_RELEASE = f"https://api.github.com/repos/{REPO}/releases/latest"
 NOTHING_NEWER = "Ya tienes la última versión."
@@ -218,8 +218,8 @@ class UvReinstaller:
         return self._folder / f"constraints-{tag}.txt"
 
 
-def _failed(sent: bool) -> str:
-    return f"{_FAILED} {(SENT if sent else QUEUED).removeprefix('Algo salió mal. ')}"
+def _failed(notice: str) -> str:
+    return f"{_FAILED} {notice.removeprefix('Algo salió mal. ')}"
 
 
 def _spec(tag: str) -> str:

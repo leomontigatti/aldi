@@ -392,8 +392,7 @@ class JobStore:
         else:
             kind = "mixed" if with_text else "scanned"
         mode = "Layout-kept Translation" if self.get(job_id).output_mode == "layout" else "Reading Version"
-        sent = self._reporter.report(problem, details, Context(mode, kind, len(scanned), list(failed)))
-        return reports.SENT if sent else reports.QUEUED
+        return self._reporter.report(problem, details, Context(mode, kind, len(scanned), list(failed)))
 
     def _ask(self, job_id: str, request: Callable[[], _Answer]) -> _Answer:
         """The request's answer, waiting out a Quota Pause, a lost connection or a refused key as often as it takes:

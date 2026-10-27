@@ -31,6 +31,8 @@ from aldi.translator import KeyRefused, Offline, QuotaExhausted
 
 SENT = "Algo salió mal. Ya se envió un informe para que lo arreglen."
 QUEUED = "Algo salió mal. El informe se enviará apenas haya conexión."
+# Held back by the daily cap: it goes out tomorrow, whatever the connection does.
+HELD = "Algo salió mal. Ya se registró un informe para que lo arreglen."
 
 REPO = "leomontigatti/aldi"
 LABELS = ["bug", "needs-triage", "source:app"]
@@ -171,8 +173,9 @@ class Reporter:
         self._thread = threading.Thread(target=self._send_now_and_then, daemon=True, name="aldi-reports")
         self._thread.start()
 
-    def report(self, problem: str, details: ErrorDetails, context: Context | None) -> bool:
-        """Queues a report and tries to send it; True when it went out, False when it waits in the queue.
+    def report(self, problem: str, details: ErrorDetails, context: Context | None) -> str:
+        """Queues a report and tries to send it; returns what she is told: `SENT` when it went out, `HELD` when the
+        daily cap keeps it for tomorrow, `QUEUED` when it waits for a connection or the token.
 
         `context` is None for a problem outside any Job, such as a failed install.
         """
@@ -191,18 +194,21 @@ class Reporter:
                 path = self._queue / f"{self._now():%Y%m%d%H%M%S}-{uuid.uuid4().hex[:8]}.json"
                 item = {"fingerprint": details.fingerprint, "title": self._redact(title), "body": body, "count": 1}
                 path.write_text(json.dumps(item, ensure_ascii=False), encoding="utf-8")
-        self._send_safely()
-        return not path.exists()
+        held = self._send_safely()
+        if not path.exists():
+            return SENT
+        return HELD if held else QUEUED
 
-    def send(self) -> None:
-        """Sends what is queued, up to the day's cap; checks the token's expiry once a day even with nothing queued."""
+    def send(self) -> bool:
+        """Sends what is queued, up to the day's cap; checks the token's expiry once a day even with nothing queued.
+        True when the cap held back some of the queue."""
         with self._lock:
             token = self._token()
             queued = sorted(self._queue.glob("*.json")) if self._queue.is_dir() else []
             state = self._state()
             today = self._now().date().isoformat()
             if not token or (not queued and state.get("checked") == today):
-                return
+                return False
             if state.get("day") != today:
                 state |= {"day": today, "sent": 0}
             try:
@@ -212,7 +218,7 @@ class Reporter:
                 self._save_state(state)
                 for path in queued:
                     if state["sent"] >= DAILY_CAP:
-                        break
+                        return True
                     item = json.loads(path.read_text(encoding="utf-8"))
                     self._send(github, issues, item)
                     path.unlink()
@@ -220,7 +226,8 @@ class Reporter:
                     self._save_state(state)
                 self._warn_before_expiry(github, issues)
             except GitHubUnavailable:
-                return
+                return False
+            return False
 
     def close(self) -> None:
         self._closing.set()
@@ -270,12 +277,13 @@ class Reporter:
             if self._closing.wait(self._interval):
                 return
 
-    def _send_safely(self) -> None:
+    def _send_safely(self) -> bool:
+        """`send`, which no error gets out of; True when the daily cap held something back."""
         try:
-            self.send()
+            return self.send()
         except Exception:
             # A report that cannot go out stays queued; it must never fail the Job or stop the thread.
-            pass
+            return False
 
     def _state(self) -> dict:
         path = self._folder / "state.json"

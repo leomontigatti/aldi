@@ -13,6 +13,7 @@ from conftest import REPORT_TOKEN, VALID_KEY, FakeGitHub, build_born_digital_pdf
 
 SENT = "Algo salió mal. Ya se envió un informe para que lo arreglen."
 QUEUED = "Algo salió mal. El informe se enviará apenas haya conexión."
+HELD = "Algo salió mal. Ya se registró un informe para que lo arreglen."
 PRIVATE_TEXT = "Pulpal necrosis in the patient Corrêa"
 
 
@@ -194,14 +195,15 @@ def reports_of_problems(count):
 
 
 def test_a_daily_cap_holds_and_the_rest_go_out_the_next_day(tmp_path):
+    # Bug: a report the cap held back told her it waited for a connection she had.
     github = FakeGitHub()
     clock = Clock()
     reporter = Reporter(tmp_path, lambda: REPORT_TOKEN, github, now=clock, interval=3600)
     context = Context("Reading Version", "born-digital", 3, [2])
 
-    sent = [reporter.report("Failed Pages", details, context) for details in reports_of_problems(DAILY_CAP + 2)]
+    told = [reporter.report("Failed Pages", details, context) for details in reports_of_problems(DAILY_CAP + 2)]
 
-    assert sent == [True] * DAILY_CAP + [False, False]
+    assert told == [SENT] * DAILY_CAP + [HELD, HELD]
     assert len(github.reports()) == DAILY_CAP
     clock.now += timedelta(days=1)
     reporter.send()

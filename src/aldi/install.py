@@ -22,7 +22,7 @@ from pathlib import Path
 import platformdirs
 import pymupdf
 
-from aldi.reports import QUEUED, SENT, GitHub, Reporter, describe
+from aldi.reports import GitHub, Reporter, describe
 from aldi.settings import Settings, default_config_dir
 
 NAME = "Aldi"
@@ -47,10 +47,10 @@ def setup(
     except Exception as error:
         reporter = Reporter(data_dir, lambda: token, make_github, secrets=lambda: [token])
         try:
-            sent = reporter.report("Install failed", describe(error), None)
+            notice = reporter.report("Install failed", describe(error), None)
         finally:
             reporter.close()
-        print(SENT if sent else QUEUED, file=sys.stderr)
+        print(notice, file=sys.stderr)
         return False
 
 
