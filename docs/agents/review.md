@@ -12,6 +12,8 @@ A diff that touches any of these gets the full review (Standards, Spec and corre
 - **The key and her documents**: where the Gemini key is read, stored and sent, and what keeps the key and
   `samples/` out of git (`.gitignore`, the links `t3.json` makes).
 - **Dependency pins**: `pyproject.toml` and `uv.lock`, since a bump reaches her laptop with the next release.
+- **Error Reports and their token**: what an **Error Report** collects, redacts and sends, and where the GitHub
+  token is read and stored. Every report is public.
 - **Her files**: anything that writes, moves or deletes files outside the app's own **Job** folders.
 
 The `review-paths` block is the same list as paths, for `review.py tier`. The areas are named in paths the app
@@ -20,6 +22,7 @@ does not have yet; when a module lands under another name, update its line in th
 ```review-paths
 full laptop: ^(install\.(ps1|sh)|src/aldi/(install|update|launcher)|scripts/install)
 full key: ^(\.gitignore|t3\.json|src/aldi/(settings|config|keys?|gemini)\b)
+full report: ^src/aldi/(reports?|reporting|errors?)\b
 full pins: ^(pyproject\.toml|uv\.lock)$
 quiet: ^\.pre-commit-config\.yaml$
 quiet: ^\.github/dependabot\.yml$
@@ -31,6 +34,7 @@ quiet: ^\.env\.example$
 A finding in one of these that the issue does not settle is the user's call:
 
 - Anything that sends her documents, or text from them, anywhere but Gemini.
+- What an **Error Report** sends to the public tracker, and when the app files one.
 - The install, launch or update flow, and what a release changes on her laptop.
 - Spending quota differently: the **Page Batch** size, the **Model Chain**, retries.
 - A term defined in `GLOSSARY.md`.
@@ -60,4 +64,5 @@ Where this code is likely to be hurt, for the correctness brief:
 
 - A release tag: her laptop installs it on the next update, and a broken one may also break the update button.
 - Making the key or her documents leave her laptop for anywhere new.
+- An **Error Report** that puts document text, a file name or a key in a public issue: it cannot be unpublished.
 - Deleting anything outside the app's own **Job** folders.

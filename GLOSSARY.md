@@ -35,8 +35,8 @@ _Avoid_: Selection, chapter
 ### Output
 
 **Output Mode**:
-What the user chooses for a **Job**: the **Layout-kept Translation** or the **Reading Version**. The app
-pre-selects the one that fits the **Source Document**.
+What the user chooses for a **Job**: the **Reading Version**, pre-selected for every **Source Document**, or the
+**Layout-kept Translation**, offered only when every page in the **Page Range** has a text layer.
 _Spanish_: Formato del resultado
 
 **Layout-kept Translation**:
@@ -46,9 +46,9 @@ _Spanish_: Mantener el diseño
 _Avoid_: Overlay, mono PDF
 
 **Reading Version**:
-The **Output Mode** that rebuilds the content as a new, clean document: headings, paragraphs, lists, the
-**Figures** cropped from the original with their captions translated, and a **Page Marker** where each original
-page starts. Written as a PDF and a DOCX from one Markdown.
+The **Output Mode** that rebuilds the content as a new, clean document in one column, left-aligned: headings,
+paragraphs, lists, the **Figures** taken from the original with their captions translated, and a **Page Marker**
+where each original page starts, with the references left in their original language. Written as a PDF and a DOCX.
 _Spanish_: Versión de lectura con imágenes
 _Avoid_: Reflow, rebuild (in the UI)
 
@@ -57,6 +57,11 @@ A photo, diagram or chart on an original page, carried into the **Reading Versio
 page. Text inside it stays as printed.
 _Spanish_: Figura
 _Avoid_: Image (for the whole page)
+
+**Release**:
+A version of the app the user has checked and tagged. Her laptop offers to update only to a **Release**.
+_Spanish_: Versión nueva (`Hay una versión nueva — Actualizar`)
+_Avoid_: Build, commit
 
 **Page Marker**:
 The note in the **Reading Version** where an original page starts (`p. 130 del original`), so citations to the
@@ -72,10 +77,22 @@ _Spanish_: Traducción
 _Avoid_: Task, run
 
 **Page Batch**:
-The pages of a **Scanned PDF** sent to Gemini in one request (four by default): it returns each page's text in the
-original and in Spanish, and where its **Figures** are.
+The pages of a **Scanned PDF** that Gemini reads and translates in one request (four by default): it returns
+each page's Spanish and where its **Figures** are.
 _Spanish_: (not shown)
 _Avoid_: Chunk
+
+**Term List**:
+The technical terms and acronyms a **Job** has translated so far, with the Spanish it chose, so a term reads the
+same on every page.
+_Spanish_: (not shown)
+_Avoid_: Glossary (that is this file)
+
+**Failed Page**:
+A page that still fails after its retries. The result carries the original page's image with `Esta página no se
+pudo traducir`, and the **Job** offers to try those pages again.
+_Spanish_: Página fallida (`Reintentar páginas fallidas`)
+_Avoid_: Skipped page
 
 **Model Chain**:
 The Gemini models a **Job** uses in order. Each has its own free quota, so when one runs out the **Job** moves to
@@ -88,3 +105,10 @@ The state of a **Job** when every model in the **Model Chain** is out of quota: 
 page and resumes from there, by itself, once quota is back.
 _Spanish_: En pausa hasta que Gemini vuelva a estar disponible
 _Avoid_: Failure, error
+
+**Error Report**:
+What the app files on its own when something goes wrong that is a bug, such as a crash or a **Failed Page**: a
+public issue on the app's repo with what is needed to fix it and nothing from the document. A **Quota Pause** is
+not one.
+_Spanish_: Informe (`Ya se envió un informe para que lo arreglen.`)
+_Avoid_: Crash report, telemetry

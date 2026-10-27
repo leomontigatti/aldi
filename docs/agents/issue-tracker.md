@@ -73,6 +73,14 @@ milestone. That multiplies a PRD in any priority list, so add `no:parent-issue` 
 > **`ready-for-agent` triggers nothing.** It is a triage state ("specified and grabbable"): a local session
 > picks the issue up from the dispatch queue above. No label starts a run.
 
+### Source
+
+A `source:*` label says who opened an issue when it was not a person. `source:app` marks an **Error Report**: the
+app opens it from her laptop with `bug` and `needs-triage`, and adds a comment instead of a new issue when the
+same problem repeats ([ADR 4](../adr/0004-errors-reported-as-public-issues.md)). Triage it like any bug; the
+report names the app version and the failed pages, never the document, so reproducing it means asking her
+which document it was.
+
 ## Pull requests as a triage surface
 
 **PRs as a request surface: no.** _(Set to `yes` if this repo treats external PRs as feature requests; `/triage` reads this flag.)_
