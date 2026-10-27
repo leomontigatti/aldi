@@ -89,7 +89,11 @@ def test_a_dropped_document_waits_for_its_pages_and_shows_its_estimate(app, tran
     assert document["pages"] == 5
     assert document["estimate"] == estimate([False] * 5)
     chosen = app.get(f"/api/documents/{document['id']}/estimate?pages=" + urllib.parse.quote("2, 4-5"))
-    assert chosen == {"pages": 3, "estimate": estimate([False] * 3)}
+    assert chosen == {
+        "pages": 3,
+        "estimate": estimate([False] * 3),
+        "layout_estimate": estimate([False] * 3, layout=True),
+    }
     assert app.get("/api/jobs")["jobs"] == []
     assert translator.requests == []
 

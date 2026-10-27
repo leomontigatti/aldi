@@ -222,7 +222,9 @@ class JobStore:
                 translated, failed, failure = self._translate_pages(job_id, folder, pages)
                 problem = "Result could not be written"
                 stem = f"{job.name} (es)"
-                results = [(result, f"{stem}{result.suffix}") for result in write_reading_version(translated, folder, stem)]
+                results = [
+                    (result, f"{stem}{result.suffix}") for result in write_reading_version(translated, folder, stem)
+                ]
             # A retry of the Failed Pages lands beside the first results, numbered: she may have edited those.
             delivered = [deliver(result, self._documents_dir, job.name, filename) for result, filename in results]
         except _Closing:
@@ -233,7 +235,9 @@ class JobStore:
             notice = self._report(job_id, problem, details, scanned, []) if reports.is_bug(error) else ""
             self._update(job_id, state="failed", notice=notice)
             return
-        notice = self._report(job_id, "Failed Pages", reports.ErrorDetails(**failure), scanned, failed) if failure else ""
+        notice = (
+            self._report(job_id, "Failed Pages", reports.ErrorDetails(**failure), scanned, failed) if failure else ""
+        )
         self._update(
             job_id,
             state="done",

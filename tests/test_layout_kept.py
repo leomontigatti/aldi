@@ -22,7 +22,8 @@ def three_pages(tmp_path):
 
 
 def page_texts(path):
-    return [" ".join(page.get_text().split()) for page in pymupdf.open(path)]
+    # BabelDOC's fonts give its spaces no Unicode: they read back as U+0003.
+    return [" ".join(page.get_text().replace("\x03", " ").split()) for page in pymupdf.open(path)]
 
 
 def refused(call) -> tuple[int, str]:
@@ -89,9 +90,7 @@ def test_mantener_el_diseno_takes_its_own_time_per_page():
     assert estimate([False] * 30, layout=True) != estimate([False] * 30)
 
 
-def test_mantener_el_diseno_keeps_to_flash_and_waits_out_its_minute_quota(
-    start_app, clock, documents_dir, tmp_path
-):
+def test_mantener_el_diseno_keeps_to_flash_and_waits_out_its_minute_quota(start_app, clock, documents_dir, tmp_path):
     gemini = FakeGemini()
     gemini.fail(FLASH, quota_error("20s"))
     app = start_app(GeminiTranslator(gemini, sleep=clock.sleep, clock=clock.now))

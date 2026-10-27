@@ -33,6 +33,9 @@
   #chooser { background: #fff; border-radius: 12px; padding: 1rem 1.2rem; }
   #chooser label { display: block; margin: .8rem 0 .3rem; }
   #page-range { width: 100%; box-sizing: border-box; font: inherit; padding: .5rem; border: 1px solid #9a9a9a; border-radius: 8px; }
+  #output-mode { border: none; padding: 0; margin: .8rem 0 0; }
+  #output-mode legend { padding: 0; margin-bottom: .3rem; }
+  #output-mode label { display: inline; margin: 0 1.2rem 0 .3rem; }
   #estimate { color: #555; min-height: 1.5em; }
   #range-message { color: #a33; min-height: 1.5em; }
   #update { background: #eef6fb; border-radius: 10px; padding: .6rem 1rem; margin-bottom: 1rem; }
@@ -81,6 +84,11 @@
     <label for="page-range">¿Todo el documento o qué páginas?</label>
     <input id="page-range" autocomplete="off" spellcheck="false" placeholder="Todo el documento, o por ejemplo 130-145 o 3, 7-9">
   </div>
+  <fieldset id="output-mode" hidden>
+    <legend>¿Cómo la quieres?</legend>
+    <input type="radio" name="output-mode" id="mode-reading" value="reading" checked><label for="mode-reading">Versión de lectura con imágenes</label>
+    <input type="radio" name="output-mode" id="mode-layout" value="layout"><label for="mode-layout">Mantener el diseño</label>
+  </fieldset>
   <p id="estimate"></p>
   <p id="range-message" role="alert"></p>
   <button type="submit">Traducir</button>
@@ -110,8 +118,21 @@ const chooser = document.getElementById("chooser");
 const pageRange = document.getElementById("page-range");
 const estimateLine = document.getElementById("estimate");
 const rangeMessage = document.getElementById("range-message");
+const outputMode = document.getElementById("output-mode");
+const modeLayout = document.getElementById("mode-layout");
 let dropped = null;
 let estimating = null;
+// The chosen pages' Estimate in each Output Mode; `layout` is null when Mantener el diseño is not offered.
+let estimates = { reading: "", layout: null };
+
+function showEstimates(body) {
+  estimates = { reading: body.estimate, layout: body.layout_estimate };
+  // Offered only when every chosen page has text; the Reading Version is chosen again when it is not.
+  outputMode.hidden = estimates.layout === null;
+  if (outputMode.hidden) document.getElementById("mode-reading").checked = true;
+  estimateLine.textContent = modeLayout.checked ? estimates.layout : estimates.reading;
+}
+outputMode.addEventListener("change", () => showEstimates({ estimate: estimates.reading, layout_estimate: estimates.layout }));
 
 async function send(pdf) {
   message.textContent = "";
@@ -135,7 +156,8 @@ function choose(document_) {
     document_.pages === 1 ? "Tiene 1 página." : `Tiene ${document_.pages} páginas.`;
   document.getElementById("range-field").hidden = document_.pages === 1;
   pageRange.value = "";
-  estimateLine.textContent = document_.estimate;
+  document.getElementById("mode-reading").checked = true;
+  showEstimates(document_);
   rangeMessage.textContent = "";
   drop.hidden = true;
   chooser.hidden = false;
@@ -156,7 +178,8 @@ pageRange.addEventListener("input", () => {
       const response = await fetch(`/api/documents/${dropped.id}/estimate?pages=${encodeURIComponent(asked)}`);
       const body = await response.json();
       if (pageRange.value !== asked) return;
-      estimateLine.textContent = response.ok ? body.estimate : "";
+      if (response.ok) showEstimates(body);
+      else estimateLine.textContent = "";
       rangeMessage.textContent = response.ok ? "" : body.error;
     } catch {
       // Starting checks the pages again.
@@ -172,7 +195,11 @@ chooser.addEventListener("submit", async (event) => {
     const response = await fetch("/api/jobs", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ document: dropped.id, pages: pageRange.value }),
+      body: JSON.stringify({
+        document: dropped.id,
+        pages: pageRange.value,
+        output_mode: !outputMode.hidden && modeLayout.checked ? "layout" : "reading",
+      }),
     });
     if (response.ok) closeChooser();
     else if (response.status === 400) rangeMessage.textContent = (await response.json()).error;
@@ -208,11 +235,12 @@ async function openFolder(id) {
 }
 
 function describe(job) {
-  // The page in hand, not the pages finished: the first one reads "Página 1".
-  const progress = `Página ${Math.min(job.page + 1, job.pages)} de ${job.pages}`;
+  // The page in hand, not the pages finished: the first one reads "Página 1". Mantener el diseño lays out every
+  // page before it asks Gemini anything, so it has no page in hand to name.
+  const progress = job.pages && job.output_mode !== "layout" ? ` Página ${Math.min(job.page + 1, job.pages)} de ${job.pages}` : "";
   if (job.state === "queued") return "En espera";
-  if (job.state === "running") return job.pages ? `Traduciendo… ${progress}` : "Traduciendo…";
-  if (job.state === "paused") return `${job.notice}. ${progress}`;
+  if (job.state === "running") return `Traduciendo…${progress}`;
+  if (job.state === "paused") return `${job.notice}.${progress}`;
   if (job.state === "done" && job.failed_pages.length === 1) return "Lista, salvo 1 página que no se pudo traducir";
   if (job.state === "done" && job.failed_pages.length) return `Lista, salvo ${job.failed_pages.length} páginas que no se pudieron traducir`;
   if (job.state === "done") return "Lista";

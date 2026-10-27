@@ -49,6 +49,8 @@ def write_layout_kept(
         only_include_translated_page=True,
         auto_extract_glossary=False,
         primary_font_family="serif",
+        # Aldi offers this mode only for pages with a text layer; BabelDOC's own guess refuses pages with little text.
+        skip_scanned_detection=True,
         # One request at a time: flash's free tier takes 5 a minute (ADR 1).
         qps=1,
         pool_max_workers=1,
