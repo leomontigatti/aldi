@@ -163,7 +163,8 @@ class RunningApp:
         self.server = server
         host, port = server.server_address[:2]
         self.base_url = f"http://{host}:{port}"
-        self._thread = threading.Thread(target=server.serve_forever, daemon=True)
+        # `shutdown` waits out the poll interval, 0.5 s by default: on every test's teardown.
+        self._thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True)
         self._thread.start()
 
     def stop(self) -> None:
