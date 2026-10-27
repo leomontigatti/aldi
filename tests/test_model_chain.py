@@ -9,9 +9,11 @@ from google.genai import errors
 
 from aldi.gemini import BUSY_WAITS, MODEL_CHAIN, GeminiTranslator
 from aldi.jobs import JobStore
+from aldi.reports import Reporter
 from aldi.translator import QuotaExhausted
 from conftest import (
     FakeGemini,
+    FakeGitHub,
     FakeTranslator,
     build_born_digital_pdf,
     busy_error,
@@ -159,7 +161,8 @@ def test_closing_the_app_during_a_quota_pause_stops_the_job_where_it_was(tmp_pat
         raise QuotaExhausted
 
     translator.translate_texts = out_of_quota
-    store = JobStore(tmp_path / "data", tmp_path / "Documentos", translator, open_folder=lambda folder: None)
+    reporter = Reporter(tmp_path / "data", token=str, make_github=lambda token: FakeGitHub())
+    store = JobStore(tmp_path / "data", tmp_path / "Documentos", translator, lambda folder: None, reporter)
     job = store.start("Esmalte.pdf", build_born_digital_pdf(tmp_path / "Esmalte.pdf", PAGES).read_bytes())
     deadline = time.monotonic() + 10
     while store.get(job.id).state != "paused" and time.monotonic() < deadline:
@@ -171,5 +174,6 @@ def test_closing_the_app_during_a_quota_pause_stops_the_job_where_it_was(tmp_pat
     while any(thread.name.startswith("aldi-job") for thread in threading.enumerate()):
         assert time.monotonic() < deadline, "the Job kept waiting after the app closed"
         time.sleep(0.02)
+    reporter.close()
     assert store.get(job.id).state == "paused"
     assert not (tmp_path / "data" / "jobs" / job.id / "error.txt").exists()

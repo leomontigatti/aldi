@@ -51,6 +51,6 @@ Which flow proves which area. Filled in as each area lands.
 
 | Area | Flow |
 | ---- | ---- |
-| Reading Version of a **Born-digital PDF** | Drop the PDF (or `Elegir archivo`); the list shows `Traduciendo… Página N de M`, then `Lista` with the results' folder. Open the PDF and DOCX there: Spanish text, one column, left-aligned, a `p. N del original` at each original page. |
+| Reading Version of a **Born-digital PDF** | Drop the PDF (or `Elegir archivo`); the list shows `Traduciendo… Página N de M`, then `Lista` with the results' folder. Open the PDF and DOCX there: Spanish text, one column, left-aligned, a `p. N del original` at each original page; the original's images near their text with the Spanish caption under them, its tables as tables, its bold and italics, its references untranslated, no running headers or page numbers (`uv run just test-pdf` builds such an article). |
 | Key setup and settings | With no key in `jobs/config/settings.json` nor in `.env`, the app opens on the setup screen's steps. A wrong key shows `Esa clave no funciona…` under the field; a valid one opens the drop zone. `Ajustes` opens the same form to change it, and `Volver` goes back. |
 | A file that is not a PDF | Drop it; `Este archivo no es un PDF.` appears under the drop zone and no **Job** starts. |

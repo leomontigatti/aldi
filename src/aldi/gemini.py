@@ -25,10 +25,12 @@ student. Use standard Spanish dental terminology.
 
 You receive a JSON object with `blocks`, the text blocks of one page in reading order, and `terms`, the technical \
 terms and acronyms already translated in this document with the Spanish chosen for each. Return `spanish`: \
-exactly one Spanish translation per block, in the same order, as plain text. Translate every term in `terms` the \
-way it says. Translate an acronym, with the original in parentheses the first time it appears. Return in `terms` \
-only the technical terms and acronyms this page adds, each with the Spanish you chose. Return only the Spanish, \
-never the original text."""
+exactly one Spanish translation per block, in the same order. A block marks bold as `**bold**` and italics as \
+`*italics*`, and writes a literal `*` or `\\` as `\\*` or `\\\\`: put each mark around the Spanish words that \
+translate the marked ones, keep every escape, and add no mark the block does not have. Translate every term in \
+`terms` the way it says. Translate an acronym, with the original in parentheses the first time it appears. \
+Return in `terms` only the technical terms and acronyms this page adds, each with the Spanish you chose. Return \
+only the Spanish, never the original text."""
 
 # Gemma fails or hangs on a request with a response schema, so it gets the answer's shape in words instead.
 _TEXT_SHAPE = """

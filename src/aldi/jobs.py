@@ -4,14 +4,19 @@ import json
 import threading
 import traceback
 import uuid
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
+from typing import TypeVar
 
+from aldi import reports
+from aldi.blocks import Block, Kind
+from aldi.reading import translate_page
+from aldi.reports import Context, Reporter
 from aldi.results import deliver, document_name
 from aldi.source import SourcePage, read_pages, render_page
-from aldi.translator import Offline, QuotaExhausted, TextTranslation, Translator
+from aldi.translator import Offline, QuotaExhausted, Translator
 from aldi.writer import TranslatedPage, write_reading_version
 
 # A page gets two retries before it becomes a Failed Page.
@@ -21,6 +26,8 @@ OFFLINE_NOTICE = "Sin conexión a internet"
 # Seconds before a paused Job asks Gemini again: a per-minute quota is back by then, a daily one costs a few 429s.
 QUOTA_PAUSE = 5 * 60
 OFFLINE_WAIT = 30
+
+_Answer = TypeVar("_Answer")
 
 
 class _Closing(Exception):
@@ -45,7 +52,8 @@ class Job:
     failed_pages: list[int] = field(default_factory=list)
     """The Failed Pages of a finished Job, by their number in the original."""
     notice: str = ""
-    """What the UI says under the state besides the progress, such as why a Job is paused."""
+    """The Spanish line the UI shows under the Job's state besides the progress, such as why it is paused or an
+    Error Report's."""
 
 
 class JobStore:
@@ -61,12 +69,14 @@ class JobStore:
         documents_dir: Path,
         translator: Translator,
         open_folder: Callable[[Path], None],
+        reporter: Reporter,
         sleep: Callable[[float], None] | None = None,
     ):
         self._jobs_dir = data_dir / "jobs"
         self._documents_dir = documents_dir
         self._translator = translator
         self._open_folder = open_folder
+        self._reporter = reporter
         self._lock = threading.Lock()
         self._closing = threading.Event()
         self._sleep = sleep or self._closing.wait
@@ -102,7 +112,7 @@ class JobStore:
             job.state = "queued"
         for number in job.failed_pages:
             (self._folder(job_id) / "pages" / f"{number:04d}.json").unlink(missing_ok=True)
-        self._update(job_id, failed_pages=[])
+        self._update(job_id, failed_pages=[], notice="")
         self._worker.submit(self._run, job_id)
         return self.get(job_id)
 
@@ -122,12 +132,15 @@ class JobStore:
 
     def _run(self, job_id: str) -> None:
         folder = self._folder(job_id)
+        source: list[SourcePage] = []
+        problem = "Crash while translating"
         try:
-            source = read_pages(folder / "source.pdf")
+            source = read_pages(folder / "source.pdf", folder)
             self._update(job_id, state="running", pages=len(source))
             terms: dict[str, str] = {}
             translated = []
             failed = []
+            failure = None
             for page in source:
                 done = folder / "pages" / f"{page.number:04d}.json"
                 if not done.exists():
@@ -141,28 +154,34 @@ class JobStore:
                     image = Path("pages") / f"{page.number:04d}.png"
                     render_page(folder / "source.pdf", page.number, folder / image)
                     failed.append(page.number)
+                    failure = failure or saved.get("report")
                     translated.append(TranslatedPage(page.number, [], failed_image=image))
                 else:
-                    translated.append(TranslatedPage(page.number, saved["spanish"]))
+                    blocks = [Block.from_dict(block) for block in saved["blocks"]]
+                    translated.append(TranslatedPage(page.number, blocks))
                 self._update(job_id, page=len(translated))
+            problem = "Result could not be written"
             job = self.get(job_id)
             stem = f"{job.name} (es)"
             results = write_reading_version(translated, folder, stem)
             # A retry of the Failed Pages lands beside the first results, numbered: she may have edited those.
             delivered = [deliver(result, self._documents_dir, job.name, f"{stem}{result.suffix}") for result in results]
-            self._update(
-                job_id,
-                state="done",
-                results=[d.name for d in delivered],
-                folder=str(delivered[0].parent),
-                failed_pages=failed,
-            )
         except _Closing:
             return
-        except Exception:
+        except Exception as error:
             (folder / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
-            self._update(job_id, state="failed")
+            notice = self._report(problem, reports.describe(error), source, []) if reports.is_bug(error) else ""
+            self._update(job_id, state="failed", notice=notice)
             return
+        notice = self._report("Failed Pages", reports.ErrorDetails(**failure), source, failed) if failure else ""
+        self._update(
+            job_id,
+            state="done",
+            results=[d.name for d in delivered],
+            folder=str(delivered[0].parent),
+            failed_pages=failed,
+            notice=notice,
+        )
         try:
             self._open_folder(delivered[0].parent)
         except OSError:
@@ -171,25 +190,40 @@ class JobStore:
 
     def _translate(self, job_id: str, page: SourcePage, terms: dict[str, str]) -> dict:
         """What a page's `pages/NNNN.json` holds once it is done, Failed Page or not."""
-        if not page.texts:
-            return {"source": [], "spanish": [], "terms": terms}
         for _ in range(_ATTEMPTS):
             try:
-                answer = self._ask(job_id, page.texts, terms)
+                spanish, after = self._ask(job_id, lambda: translate_page(page, self._translator, terms))
             except _Closing:
                 raise
-            except Exception:
-                error = traceback.format_exc()
+            except Exception as exception:
+                last = exception
                 continue
-            return {"source": page.texts, "spanish": answer.texts, "terms": answer.terms}
-        return {"source": page.texts, "failed": True, "error": error, "terms": terms}
+            return {"blocks": [asdict(block) for block in spanish.blocks], "terms": after}
+        error = "".join(traceback.format_exception(last))
+        # What its Error Report will say, redacted now; a page that failed on a 503 or a refused key gets none.
+        report = asdict(reports.describe(last)) if reports.is_bug(last) else None
+        return {"failed": True, "error": error, "report": report, "terms": terms}
 
-    def _ask(self, job_id: str, texts: Sequence[str], terms: Mapping[str, str]) -> TextTranslation:
-        """The translator's answer, waiting out a Quota Pause or a lost connection as often as it takes: neither is
-        the page's fault, so neither makes it a Failed Page."""
+    def _report(
+        self, problem: str, details: reports.ErrorDetails, source: Sequence[SourcePage], failed: Sequence[int]
+    ) -> str:
+        """Files an Error Report about this Job; returns what she is told about it."""
+        with_text = sum(1 for page in source if any(block.kind != Kind.FIGURE for block in page.blocks))
+        if not source:
+            kind = "unknown"
+        elif with_text == len(source):
+            kind = "born-digital"
+        else:
+            kind = "mixed" if with_text else "scanned"
+        sent = self._reporter.report(problem, details, Context("Reading Version", kind, len(source), list(failed)))
+        return reports.SENT if sent else reports.QUEUED
+
+    def _ask(self, job_id: str, request: Callable[[], _Answer]) -> _Answer:
+        """The request's answer, waiting out a Quota Pause or a lost connection as often as it takes: neither is the
+        page's fault, so neither makes it a Failed Page."""
         while True:
             try:
-                answer = self._translator.translate_texts(texts, terms)
+                answer = request()
             except QuotaExhausted:
                 self._wait(job_id, QUOTA_PAUSE_NOTICE, QUOTA_PAUSE)
             except Offline:
