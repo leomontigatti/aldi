@@ -22,6 +22,7 @@ from aldi.results import open_folder as open_in_file_browser
 from aldi.settings import Settings, default_config_dir
 from aldi.source import NotAPdfError
 from aldi.translator import Translator
+from aldi.update import NOTHING_NEWER, Reinstaller, Updates, installed_version
 
 # Her largest book is 52 MB; anything far beyond that is not a document she would drop.
 _MAX_UPLOAD = 500 * 1024 * 1024
@@ -35,13 +36,22 @@ class AldiServer(ThreadingHTTPServer):
     daemon_threads = True
 
     def __init__(
-        self, address, jobs: JobStore, reporter: Reporter, settings: Settings, check_key: Callable[[str], bool]
+        self,
+        address,
+        jobs: JobStore,
+        reporter: Reporter,
+        settings: Settings,
+        check_key: Callable[[str], bool],
+        updates: Updates,
     ):
         super().__init__(address, _Handler)
         self.jobs = jobs
         self.reporter = reporter
         self.settings = settings
         self.check_key = check_key
+        self.updates = updates
+        self.close_window: Callable[[], None] = lambda: None
+        """Closes the app's window, as `Actualizar` does once the update is ready; `main` sets it."""
 
     def server_close(self):
         super().server_close()
@@ -73,6 +83,9 @@ def create_server(
     check_key: Callable[[str], bool],
     make_github: Callable[[str], GitHub],
     open_folder: Callable[[Path], None] = open_in_file_browser,
+    latest_release: Callable[[], str] | None = None,
+    reinstaller: Reinstaller | None = None,
+    version: str | None = None,
     report_interval: float = 300,
     host: str = "127.0.0.1",
     port: int = 0,
@@ -82,8 +95,10 @@ def create_server(
 
     `make_translator` builds the translator for a key; `check_key` asks Gemini whether a key works; `make_github`
     builds the client Error Reports are filed with, for the reporting token; `sleep` stands in for the Job store's
-    waits (a Quota Pause, no connection) in tests. Jobs left unfinished in `data_dir` by the last run start again,
-    in the order they were dropped; queued Error Reports are sent every `report_interval` seconds.
+    waits (a Quota Pause, no connection) in tests. `latest_release` asks GitHub for the latest Release's tag and
+    `reinstaller` installs it; without them, as in development, no update is offered. Jobs left unfinished in
+    `data_dir` by the last run start again, in the order they were dropped; queued Error Reports are sent every
+    `report_interval` seconds.
     """
     translator = _TranslatorForKey(settings, make_translator)
     reporter = Reporter(
@@ -94,7 +109,8 @@ def create_server(
         interval=report_interval,
     )
     jobs = JobStore(data_dir, documents_dir, translator, open_folder, reporter, sleep)
-    return AldiServer((host, port), jobs, reporter, settings, check_key)
+    updates = Updates(data_dir, version or installed_version(), latest_release, reinstaller, reporter)
+    return AldiServer((host, port), jobs, reporter, settings, check_key, updates)
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -107,6 +123,9 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(HTTPStatus.OK, page, "text/html; charset=utf-8")
         if path == "/api/settings":
             return self._json(HTTPStatus.OK, self._settings())
+        if path == "/api/update":
+            updates = self.server.updates
+            return self._json(HTTPStatus.OK, {"available": updates.available(), "notice": updates.notice})
         if path == "/api/jobs":
             return self._json(HTTPStatus.OK, {"jobs": [asdict(job) for job in self.server.jobs.list()]})
         if path.startswith("/api/documents/") and path.endswith("/estimate"):
@@ -141,6 +160,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._open_folder(path.removeprefix("/api/jobs/").removesuffix("/open-folder"))
         if path.startswith("/api/jobs/") and path.endswith("/retry"):
             return self._retry(path.removeprefix("/api/jobs/").removesuffix("/retry"))
+        if path == "/api/update":
+            return self._update()
         if path not in ("/api/documents", "/api/jobs"):
             return self._json(HTTPStatus.NOT_FOUND, {"error": "No encontrado."})
         if not self.server.settings.key:
@@ -187,6 +208,17 @@ class _Handler(BaseHTTPRequestHandler):
         except PageRangeError as error:
             return self._json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
         self._json(HTTPStatus.OK, {"pages": len(pages), "estimate": estimate([document.scanned[n - 1] for n in pages])})
+
+    def _update(self):
+        try:
+            ready = self.server.updates.update()
+        except LookupError:
+            return self._json(HTTPStatus.CONFLICT, {"error": NOTHING_NEWER})
+        if not ready:
+            return self._json(HTTPStatus.BAD_GATEWAY, {"error": self.server.updates.notice})
+        self._json(HTTPStatus.OK, {"restarting": True})
+        # After the answer, so the window shows that Aldi restarts before it closes.
+        threading.Timer(0.5, self.server.close_window).start()
 
     def _retry(self, job_id: str):
         if not self.server.jobs.get(job_id):
@@ -236,6 +268,7 @@ def main(argv: list[str] | None = None, open_window: Callable[[str], None] | Non
 
     from aldi.gemini import GeminiTranslator, validate_key
     from aldi.reports import GitHubClient
+    from aldi.update import UvReinstaller, installed_from_release, latest_release
 
     parser = argparse.ArgumentParser(prog="aldi")
     parser.add_argument("--data-dir", type=Path, default=Path(platformdirs.user_data_dir("Aldi", appauthor=False)))
@@ -249,8 +282,17 @@ def main(argv: list[str] | None = None, open_window: Callable[[str], None] | Non
     def make_translator(key: str) -> GeminiTranslator:
         return GeminiTranslator(genai.Client(api_key=key))
 
+    release = installed_from_release()
     server = create_server(
-        args.data_dir, args.documents_dir, settings, make_translator, validate_key, GitHubClient, port=args.port
+        args.data_dir,
+        args.documents_dir,
+        settings,
+        make_translator,
+        validate_key,
+        GitHubClient,
+        latest_release=latest_release if release else None,
+        reinstaller=UvReinstaller(args.data_dir, installed_version()) if release else None,
+        port=args.port,
     )
     host, port = server.server_address[:2]
     url = f"http://{host}:{port}/"
@@ -265,12 +307,15 @@ def main(argv: list[str] | None = None, open_window: Callable[[str], None] | Non
         return
     serving = threading.Thread(target=server.serve_forever, daemon=True, name="aldi-server")
     serving.start()
+    if open_window is None:
+        open_window, server.close_window = _native_window, _close_native_window
     try:
-        (open_window or _native_window)(url)
+        open_window(url)
     finally:
         server.shutdown()
         server.server_close()
         serving.join()
+    server.updates.finish()
 
 
 def _native_window(url: str) -> None:
@@ -278,3 +323,10 @@ def _native_window(url: str) -> None:
 
     webview.create_window("Aldi", url, width=960, height=800, min_size=(560, 480))
     webview.start()
+
+
+def _close_native_window() -> None:
+    import webview
+
+    for window in list(webview.windows):
+        window.destroy()

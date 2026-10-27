@@ -1,7 +1,6 @@
 """Error Reports: a bug files a public issue with nothing from her document, once per problem, capped (#15)."""
 
 import getpass
-import time
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -10,7 +9,7 @@ from google.genai import errors as genai_errors
 from aldi.reports import DAILY_CAP, Context, Reporter, describe, token_expiry
 from aldi.settings import Settings
 from aldi.translator import QuotaExhausted
-from conftest import REPORT_TOKEN, VALID_KEY, FakeGitHub, build_born_digital_pdf
+from conftest import REPORT_TOKEN, VALID_KEY, FakeGitHub, build_born_digital_pdf, wait_until
 
 SENT = "Algo salió mal. Ya se envió un informe para que lo arreglen."
 QUEUED = "Algo salió mal. El informe se enviará apenas haya conexión."
@@ -33,14 +32,6 @@ def document(tmp_path):
     folder = tmp_path / getpass.getuser() / "Visão"
     folder.mkdir(parents=True)
     return build_born_digital_pdf(folder / "Visão Corrêa.pdf", [["The pulp."], [PRIVATE_TEXT], ["The root."]])
-
-
-def wait_until(condition, timeout=10):
-    deadline = time.monotonic() + timeout
-    while not condition():
-        if time.monotonic() > deadline:
-            raise AssertionError("timed out")
-        time.sleep(0.02)
 
 
 def private_bits(source):

@@ -1,5 +1,5 @@
 # Installs Aldi on Windows, from PowerShell:
-#   powershell -ExecutionPolicy ByPass -c "irm https://raw.githubusercontent.com/leomontigatti/aldi/main/install.ps1 | iex"
+#   powershell -ExecutionPolicy ByPass -c "irm https://github.com/leomontigatti/aldi/releases/latest/download/install.ps1 | iex"
 # It installs uv, then Aldi as a uv tool from the latest Release tag with uv.lock's pins, then `aldi setup` saves
 # the reporting token and creates the shortcuts on the desktop and in the Start menu. A step that fails files an
 # Error Report (ADR 4) that names only the step and the system. Running it again reinstalls the latest Release.
@@ -72,7 +72,7 @@ function Install-Aldi {
             try {
                 $tag = (Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -ErrorAction Stop).tag_name
                 Invoke-WebRequest -UseBasicParsing -ErrorAction Stop -OutFile $constraints `
-                    "https://raw.githubusercontent.com/$repo/$tag/install-constraints.txt"
+                    "https://raw.githubusercontent.com/$repo/refs/tags/$tag/install-constraints.txt"
             } catch {
                 Fail 'release' 'no se encontró la última versión'
             }

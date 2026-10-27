@@ -73,6 +73,8 @@ install-check:
     sh install.sh
     "$home/bin/aldi" --help >/dev/null
     grep -q not-a-token "$home/config/Aldi/settings.json"
+    # How the app tells an install from a checkout, and so whether it offers updates (aldi.update).
+    test -f "$home/tools/aldi/uv-receipt.toml"
     echo "install-check: PASS"
 
 # Check a PR title the way CI does (Conventional Commit; it becomes the squash commit subject)
