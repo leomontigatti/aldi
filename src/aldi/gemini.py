@@ -9,7 +9,15 @@ from google import genai
 from google.genai import errors, types
 from pydantic import BaseModel
 
-from aldi.translator import KeyRefused, Offline, PageBatchAnswer, QuotaExhausted, Term, TextTranslation
+from aldi.translator import (
+    KeyRefused,
+    Offline,
+    PageBatchAnswer,
+    PageBatchReply,
+    QuotaExhausted,
+    Term,
+    TextTranslation,
+)
 
 # Each model has its own free quota on the same key (ADR 1); a Job moves down when one runs out.
 # gemma-4-31b-it answered 500 to every request on 2026-10-27; the 26b one works (docs/research/gemini-spike-2026-10.md).
@@ -20,6 +28,8 @@ BUSY_WAITS = (10, 30, 90)
 _BUSY_CODES = (500, 503, 504)
 # A request that takes longer is cut and waited out like a busy model: a Gemma request once hung 15 minutes.
 REQUEST_TIMEOUT = 5 * 60
+# A connection that takes longer to open is no connection at all: Offline, not a busy model.
+CONNECT_TIMEOUT = 30
 # Seconds a model that answered 429 is skipped when the answer gives no `retryDelay`: a minute's quota is back by then.
 QUOTA_RETRY = 60
 # Mantener el diseño keeps to flash (ADR 3): the free tier's 5 requests a minute run out within each minute, so a
@@ -83,9 +93,20 @@ class TranslationError(RuntimeError):
     """Gemini answered, but not with a usable translation."""
 
 
+class _ConnectTimeout(httpx.HTTPTransport):
+    """Gives opening the connection its own `CONNECT_TIMEOUT`: google-genai sets one timeout on every phase of a
+    request."""
+
+    def handle_request(self, request: httpx.Request) -> httpx.Response:
+        request.extensions["timeout"] = {**request.extensions.get("timeout", {}), "connect": CONNECT_TIMEOUT}
+        return super().handle_request(request)
+
+
 def make_client(api_key: str) -> genai.Client:
-    """Gemini's client for her key, its requests cut after `REQUEST_TIMEOUT`."""
-    return genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=REQUEST_TIMEOUT * 1000))
+    """Gemini's client for her key, its requests cut after `REQUEST_TIMEOUT`, or `CONNECT_TIMEOUT` while
+    connecting."""
+    options = types.HttpOptions(timeout=REQUEST_TIMEOUT * 1000, client_args={"transport": _ConnectTimeout()})
+    return genai.Client(api_key=api_key, http_options=options)
 
 
 class GeminiTranslator:
@@ -130,7 +151,8 @@ class GeminiTranslator:
                 types.Part.from_bytes(data=image, mime_type="image/png"),
             ]
         contents.append(types.Part.from_text(text=json.dumps({"terms": dict(terms)}, ensure_ascii=False)))
-        return self._generate(contents, _BATCH_INSTRUCTION, PageBatchAnswer, _BATCH_SHAPE)[1].text or ""
+        model, response = self._generate(contents, _BATCH_INSTRUCTION, PageBatchAnswer, _BATCH_SHAPE)
+        return PageBatchReply(response.text or "", model)
 
     def answer_layout_prompt(self, prompt: str) -> str:
         model = self._chain[0]
@@ -154,7 +176,11 @@ class GeminiTranslator:
         chain: Sequence[str] | None = None,
     ) -> tuple[str, types.GenerateContentResponse]:
         """Gemini's answer from the first model of `chain`, the Model Chain by default, that takes the request, and
-        that model; a JSON answer matching `schema` when there is one."""
+        that model; a JSON answer matching `schema` when there is one.
+
+        A model that refuses her key access (a `403`) is unavailable to her, like one out of quota; only when every
+        model asked refuses it is the key refused."""
+        asked = refused = 0
         for model in chain or self._chain:
             gemma = model.startswith("gemma")
             config = types.GenerateContentConfig(
@@ -165,9 +191,16 @@ class GeminiTranslator:
             )
             if self._clock() < self._out_of_quota_until.get(model, 0):
                 continue
-            response = self._ask(model, contents, config)
+            asked += 1
+            try:
+                response = self._ask(model, contents, config)
+            except _Forbidden:
+                refused += 1
+                continue
             if response is not None:
                 return model, response
+        if refused and refused == asked:
+            raise KeyRefused
         raise QuotaExhausted
 
     def _ask(
@@ -178,7 +211,7 @@ class GeminiTranslator:
         for wait in (*BUSY_WAITS, None):
             try:
                 return self._client.models.generate_content(model=model, contents=contents, config=config)
-            except httpx.ConnectError as error:
+            except (httpx.ConnectError, httpx.ConnectTimeout) as error:
                 raise Offline from error
             except (httpx.TimeoutException, httpx.ReadError, httpx.RemoteProtocolError):
                 # Cut off or kept waiting: Gemini is busy, not out of reach.
@@ -187,6 +220,8 @@ class GeminiTranslator:
                 if error.code == 429:
                     self._out_of_quota_until[model] = self._clock() + _retry_delay(error)
                     return None
+                if error.code == 403:
+                    raise _Forbidden from error
                 if _key_refused(error):
                     raise KeyRefused from error
                 if error.code not in _BUSY_CODES:
@@ -197,6 +232,10 @@ class GeminiTranslator:
         return None
 
 
+class _Forbidden(Exception):
+    """A model refused her key access: that model is unavailable to her, the key may still be good."""
+
+
 def _from_model(error: Exception, model: str) -> Exception:
     """`error`, carrying the model whose answer it is about for its Error Report."""
     error.gemini_model = model
@@ -205,7 +244,7 @@ def _from_model(error: Exception, model: str) -> Exception:
 
 def _key_refused(error: errors.APIError) -> bool:
     invalid = error.code == 400 and "API_KEY_INVALID" in json.dumps(error.details, default=str)
-    return invalid or error.code in (401, 403)
+    return invalid or error.code == 401
 
 
 def _retry_delay(error: errors.APIError) -> float:

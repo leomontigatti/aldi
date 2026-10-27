@@ -7,6 +7,7 @@ import zipfile
 import pymupdf
 import pytest
 
+from aldi.translator import PageBatchReply
 from conftest import SCAN_SIZE, build_scanned_pdf, pdf_text
 
 GREEN = (0x2E, 0x8B, 0x57)
@@ -67,7 +68,7 @@ def answering_first(translator, change):
         if calls:
             return answer
         calls.append(answer)
-        return change(json.loads(answer))
+        return PageBatchReply(change(json.loads(answer.text)))
 
     translator.read_page_batch = read_first
 

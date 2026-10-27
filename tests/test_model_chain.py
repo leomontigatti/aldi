@@ -1,6 +1,7 @@
 """Gemini busy, out of quota or out of reach: the Job moves down the Model Chain, pauses and resumes (#7)."""
 
 import json
+import socket
 import threading
 import time
 
@@ -9,10 +10,10 @@ import pymupdf
 import pytest
 from google.genai import errors
 
-from aldi.gemini import MODEL_CHAIN, GeminiTranslator
+from aldi.gemini import MODEL_CHAIN, GeminiTranslator, make_client
 from aldi.jobs import JobStore
 from aldi.reports import Reporter
-from aldi.translator import QuotaExhausted
+from aldi.translator import Offline, QuotaExhausted
 from conftest import (
     VALID_KEY,
     FakeGemini,
@@ -103,7 +104,7 @@ def test_a_busy_model_is_asked_again_only_after_waiting_longer_each_time(app, ge
     "failures",
     [
         [busy_error(500), busy_error(504)],
-        [httpx.ReadTimeout("timed out"), httpx.ConnectTimeout("timed out")],
+        [httpx.ReadTimeout("timed out"), httpx.WriteTimeout("timed out")],
         [httpx.ReadError("connection reset"), httpx.RemoteProtocolError("peer closed connection")],
     ],
     ids=["500 and 504", "timeouts", "dropped connection"],
@@ -167,6 +168,31 @@ def test_offline_says_so_and_the_job_continues_when_the_connection_returns(app, 
     assert job["notice"] == ""
     assert gemini.calls == [FLASH] * 4
     assert_every_page_once_in_order(documents_dir, "Pulpa")
+
+
+def test_a_connection_that_never_opens_is_offline_not_a_busy_model(app, gemini, clock, tmp_path):
+    # Bug: a connect timeout was waited out like a busy model, 5 minutes an attempt, before the Job said anything.
+    gemini.fail(FLASH, httpx.ConnectTimeout("timed out"), after=1)
+    clock.hold()
+
+    job_id = app.upload(build_born_digital_pdf(tmp_path / "Pulpa.pdf", PAGES))["id"]
+    paused = app.wait_for(job_id, until=lambda job: job["state"] == "paused")
+
+    assert paused["notice"] == "Sin conexión a internet"
+    clock.release()
+    assert app.wait_for(job_id)["state"] == "done"
+    assert gemini.calls == [FLASH] * 4
+
+
+def test_the_real_client_reports_a_connection_it_cannot_open_as_offline(monkeypatch):
+    # Nothing listens on the port once its socket is closed: connecting is refused at once, no network involved.
+    with socket.socket() as closed:
+        closed.bind(("127.0.0.1", 0))
+        port = closed.getsockname()[1]
+    monkeypatch.setenv("GOOGLE_GEMINI_BASE_URL", f"http://127.0.0.1:{port}")
+
+    with pytest.raises(Offline):
+        GeminiTranslator(make_client("AIza-de-prueba")).translate_texts(["The enamel is hard."], {})
 
 
 def test_another_gemini_error_fails_the_page_without_trying_the_other_models(app, gemini, tmp_path):
@@ -239,11 +265,20 @@ def test_closing_the_app_during_a_quota_pause_stops_the_job_where_it_was(tmp_pat
     assert not (tmp_path / "data" / "jobs" / job.id / "error.txt").exists()
 
 
-@pytest.mark.parametrize("code", [401, 403, 400])
+@pytest.mark.parametrize(
+    ("failures", "calls"),
+    [
+        ({FLASH: key_error(401)}, [FLASH, FLASH]),
+        ({FLASH: key_error(400)}, [FLASH, FLASH]),
+        ({model: key_error(403) for model in MODEL_CHAIN}, [FLASH, FLASH, LITE, GEMMA]),
+    ],
+    ids=["401", "400 API_KEY_INVALID", "403 from every model"],
+)
 def test_a_key_refused_mid_job_pauses_it_until_she_saves_a_new_key(
-    app, gemini, translator_keys, documents_dir, tmp_path, code
+    app, gemini, translator_keys, documents_dir, tmp_path, failures, calls
 ):
-    gemini.fail(FLASH, key_error(code), after=1)
+    for model, failure in failures.items():
+        gemini.fail(model, failure, after=int(model == FLASH))
 
     job_id = app.upload(build_born_digital_pdf(tmp_path / "Esmalte.pdf", PAGES))["id"]
     paused = app.wait_for(job_id, until=lambda job: job["state"] == "paused")
@@ -251,7 +286,7 @@ def test_a_key_refused_mid_job_pauses_it_until_she_saves_a_new_key(
     assert paused["notice"] == "Tu clave de Gemini dejó de funcionar. Revisa la clave en Ajustes."
     assert paused["page"] == 1
     time.sleep(0.3)
-    assert gemini.calls == [FLASH, FLASH]
+    assert gemini.calls == calls
     app.send("PUT", "/api/settings", {"key": "AIza-valida-2"})
     job = app.wait_for(job_id)
     assert job["state"] == "done"
@@ -259,6 +294,27 @@ def test_a_key_refused_mid_job_pauses_it_until_she_saves_a_new_key(
     assert job["failed_pages"] == []
     assert translator_keys == [VALID_KEY, "AIza-valida-2"]
     assert_every_page_once_in_order(documents_dir, "Esmalte")
+
+
+def test_a_model_that_refuses_access_passes_the_job_to_the_next(app, gemini, documents_dir, tmp_path):
+    # Bug: a 403 from one model (Gemma not open to her key) paused the whole Job for a new key.
+    gemini.fail(FLASH, quota_error())
+    gemini.fail(LITE, quota_error())
+    gemini.fail(GEMMA, key_error(403))
+
+    job_id = app.upload(build_born_digital_pdf(tmp_path / "Esmalte.pdf", PAGES[:1]))["id"]
+    job = app.wait_for(job_id, until=lambda job: job["state"] == "paused")
+
+    assert job["notice"] == "En pausa hasta que Gemini vuelva a estar disponible"
+
+
+def test_a_model_refusing_access_moves_the_request_down_the_chain(translator, gemini):
+    gemini.fail(FLASH, key_error(403))
+
+    translation = translator.translate_texts(["The enamel is hard."], {})
+
+    assert translation.texts == ["ES: The enamel is hard."]
+    assert gemini.calls == [FLASH, LITE]
 
 
 def test_an_error_report_names_the_model_that_failed_not_the_whole_chain(app, gemini, github, tmp_path):
@@ -272,6 +328,17 @@ def test_an_error_report_names_the_model_that_failed_not_the_whole_chain(app, ge
     [report] = github.reports()
     assert "- Gemini model: gemini-3.5-flash-lite\n" in report["body"]
     assert "- Gemini error: 400 INVALID_ARGUMENT\n" in report["body"]
+
+
+def test_an_error_report_about_an_unusable_page_batch_answer_names_its_model(app, gemini, github, tmp_path):
+    # Bug: the model of a Page Batch answer was dropped, so its report said `Gemini model: none`.
+    gemini.fail(FLASH, "not JSON", "not JSON", "not JSON")
+
+    job = app.wait_for(app.upload(build_scanned_pdf(tmp_path / "Encia.pdf", [[]]))["id"])
+
+    assert job["failed_pages"] == [1]
+    [report] = github.reports()
+    assert "- Gemini model: gemini-3.5-flash\n" in report["body"]
 
 
 def test_closing_the_app_ends_a_busy_models_wait_at_once(start_app, gemini, documents_dir, tmp_path):

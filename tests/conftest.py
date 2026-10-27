@@ -19,7 +19,7 @@ from google.genai import errors
 from aldi.app import create_server
 from aldi.reports import GitHubUnavailable, Issue
 from aldi.settings import Settings
-from aldi.translator import TextTranslation
+from aldi.translator import PageBatchReply, TextTranslation
 
 VALID_KEY = "AIza-valida-1"
 REPORT_TOKEN = "github_pat_11AAprueba"
@@ -83,18 +83,20 @@ class FakeTranslator:
         self.requests.append(list(texts))
         return TextTranslation(texts=[f"ES: {text}" for text in texts], terms=dict(terms))
 
-    def read_page_batch(self, pages: Sequence[tuple[int, bytes]], terms: Mapping[str, str]) -> str:
+    def read_page_batch(self, pages: Sequence[tuple[int, bytes]], terms: Mapping[str, str]) -> PageBatchReply:
         self.batches.append([number for number, _image in pages])
         self.terms_given.append(dict(terms))
         assert all(image.startswith(b"\x89PNG") for _number, image in pages)
         added = {}
         for number, _image in pages:
             added |= self.scanned_terms.get(number, {})
-        return json.dumps(
-            {
-                "pages": [{"page": number, "blocks": self.page_blocks(number)} for number, _image in pages],
-                "terms": [{"original": original, "spanish": spanish} for original, spanish in added.items()],
-            }
+        return PageBatchReply(
+            json.dumps(
+                {
+                    "pages": [{"page": number, "blocks": self.page_blocks(number)} for number, _image in pages],
+                    "terms": [{"original": original, "spanish": spanish} for original, spanish in added.items()],
+                }
+            )
         )
 
     def page_blocks(self, number: int) -> list[dict]:

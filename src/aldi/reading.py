@@ -64,11 +64,22 @@ def read_page_batch(
     from it, its text may sit in another page's.
     """
     numbers = [page.number for page in pages]
-    answer_text = translator.read_page_batch([(number, page_image(pdf, number)) for number in numbers], terms)
+    reply = translator.read_page_batch([(number, page_image(pdf, number)) for number in numbers], terms)
     try:
-        answer = PageBatchAnswer.model_validate_json(answer_text)
+        return _read_reply(reply.text, numbers, pdf, folder, terms)
+    except UnusableAnswer as error:
+        # Its Error Report names the model whose answer it was.
+        error.gemini_model = reply.model
+        raise
+
+
+def _read_reply(
+    text: str, numbers: list[int], pdf: Path, folder: Path, terms: dict[str, str]
+) -> tuple[list[TranslatedPage], dict[str, str]]:
+    try:
+        answer = PageBatchAnswer.model_validate_json(text)
     except ValidationError as error:
-        raise UnusableAnswer(f"not a Page Batch answer: {answer_text!r:.500}") from error
+        raise UnusableAnswer(f"not a Page Batch answer: {text!r:.500}") from error
     answered = [page.page for page in answer.pages]
     if answered != numbers:
         raise UnusableAnswer(f"sent pages {numbers}, the answer has pages {answered}")

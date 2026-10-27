@@ -46,6 +46,14 @@ class PageBatchAnswer(BaseModel):
     terms: list[Term]
 
 
+@dataclass(frozen=True)
+class PageBatchReply:
+    """Gemini's answer to a Page Batch as it gave it, and the model that gave it, which a report about it names."""
+
+    text: str
+    model: str = ""
+
+
 class Translator(Protocol):
     def translate_texts(self, texts: Sequence[str], terms: Mapping[str, str]) -> TextTranslation:
         """Translate text blocks taken from a Born-digital PDF's text layer into Spanish.
@@ -54,7 +62,7 @@ class Translator(Protocol):
         """
         ...
 
-    def read_page_batch(self, pages: Sequence[tuple[int, bytes]], terms: Mapping[str, str]) -> str:
+    def read_page_batch(self, pages: Sequence[tuple[int, bytes]], terms: Mapping[str, str]) -> PageBatchReply:
         """Read a Page Batch of a Scanned PDF, each page its number and its PNG image, and translate it into Spanish.
 
         Returns the answer as Gemini gave it, JSON meant to match `PageBatchAnswer`: the reading pipeline checks it,
