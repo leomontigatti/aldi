@@ -12,7 +12,9 @@ new account and a third party holding the data), and an issue on this repo's tra
 ## Decision
 
 When something goes wrong the app opens an **Error Report** as an issue on `leomontigatti/aldi`, without asking,
-and tells her only `Algo salió mal. Ya se envió un informe para que lo arreglen.`
+and tells her only `Algo salió mal. Ya se envió un informe para que lo arreglen.` When the report cannot go out yet
+(offline, or no token) it waits in a queue and she reads `Algo salió mal. El informe se enviará apenas haya
+conexión.` instead.
 
 - **Reported**: a crash, a **Failed Page** (a page that still fails after its retries), a failed install or
   update, and a result that cannot be written. **Not reported**, because they are not bugs: a **Quota Pause**, no
@@ -24,7 +26,7 @@ and tells her only `Algo salió mal. Ya se envió un informe para que lo arregle
   becomes a comment on it. A daily cap stops a loop from flooding the tracker.
 - **Labels**: `bug`, `needs-triage`, `source:app`.
 - **The token** is a fine-grained GitHub token that can only write issues on this repo, entered once at install.
-  With no token, or offline, reports wait in a queue and go out later. Before the token expires the app opens an
+  A queued report stays queued until the token is added. Before the token expires the app opens an
   issue for the user (not for her) to renew it.
 
 ## Consequences
