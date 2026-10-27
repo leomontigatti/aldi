@@ -25,6 +25,8 @@ _MARKDOWN = "markdown-auto_identifiers-fancy_lists"
 # Every Markdown special but the `*` and `\` a block's inline Markdown already carries, escaped or as emphasis.
 _MARKDOWN_SPECIALS = re.compile(r"([`_{}\[\]<>#+\-!|~^$])")
 _ORDERED_LIST_START = re.compile(r"^(\d+)([.)])")
+# The book's own marker that Gemini may keep at the start of a list item's text: the writer prints its own bullet.
+_BOOK_MARKER = re.compile(r"^\s*(?:[•➤▪○◦●■►–-](?:\s+|$))+")
 
 
 _FAILED_PAGE = "Esta página no se pudo traducir"
@@ -72,8 +74,10 @@ def to_markdown(pages: Sequence[TranslatedPage]) -> str:
                 continue
             elif block.kind == Kind.TABLE:
                 paragraphs.append(_table(block.rows))
-            elif block.text.strip():
-                paragraphs.append(_PREFIX.get(block.kind, "") + _escape(block.text))
+            else:
+                text = _BOOK_MARKER.sub("", block.text) if block.kind == Kind.LIST_ITEM else block.text
+                if text.strip():
+                    paragraphs.append(_PREFIX.get(block.kind, "") + _escape(text))
     return "\n\n".join(paragraphs) + "\n"
 
 

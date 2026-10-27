@@ -29,6 +29,8 @@ class SourcePage:
 _TEXT_FLAGS = pymupdf.TEXT_PRESERVE_WHITESPACE | pymupdf.TEXT_PRESERVE_IMAGES | pymupdf.TEXT_MEDIABOX_CLIP
 # Running headers, footers and page numbers sit in the top or bottom 8% of a page.
 _MARGIN = 0.08
+# Pages either side of each chosen one whose margins tell running headers from a page's own text.
+_NEIGHBOURS = 3
 _HEADING_SIZE = 1.15
 _CAPTION = re.compile(r"(fig(ure|ura)?s?\.?)\s*\d", re.IGNORECASE)
 _REFERENCES_TITLE = re.compile(
@@ -44,8 +46,10 @@ _TYPST_IMAGES = {"png", "jpeg", "jpg", "gif"}
 _DPI = 150
 # A drawing is a Figure when both its sides reach this many points (about 2 cm): rules and underlines do not.
 _FIGURE_SIDE = 50
-# A drawing that frames more text than this is a box around a passage, not a Figure with labels.
-_FIGURE_TEXT = 200
+# A table at least this share of whose area lies over a photo is lines drawn on the photo.
+_OVER_IMAGE = 0.5
+# Fewer of a table's cells than this share holding more than one character: panel letters, not a table.
+_TABLE_CELLS = 0.25
 # A text block of this many words ending like a sentence is prose, not a Figure's label.
 _SENTENCE_WORDS = 4
 # Rectangles this many or more, none framing the rest, are a drawing's shapes (a bar chart), not its frame.
@@ -68,8 +72,15 @@ def read_pages(path: Path, folder: Path, numbers: Collection[int] | None = None)
         chosen = [page for page in document if numbers is None or page.number + 1 in numbers]
         scanned = {page.number + 1 for page in chosen if _is_scanned(page)}
         pages = [(page.number + 1, [] if page.number + 1 in scanned else _read_items(page, folder)) for page in chosen]
+        # Odd and even pages carry different running headers: a short range has its own only once.
+        around = {
+            index
+            for page in chosen
+            for index in range(page.number - _NEIGHBOURS, page.number + _NEIGHBOURS + 1)
+            if 0 <= index < document.page_count
+        }
+        running = _running_texts([_margin_keys(document[index]) for index in sorted(around)])
     body_size = _body_size([items for _number, items in pages])
-    running = _running_texts([items for _number, items in pages])
     in_references = False
     result = []
     for number, items in pages:
@@ -115,14 +126,16 @@ class _Item:
 
 def _read_items(page: pymupdf.Page, folder: Path) -> list[_Item]:
     items = []
-    tables = [table for table in page.find_tables().tables if table.row_count]
-    for table in tables:
-        rows = [[_escape(" ".join((cell or "").split())) for cell in row] for row in table.extract()]
-        items.append(_Item(pymupdf.Rect(table.bbox), page.rect, Block(Kind.TABLE, rows=rows)))
     blocks = page.get_text("dict", flags=_TEXT_FLAGS)["blocks"]
+    images = [pymupdf.Rect(block["bbox"]) for block in blocks if block["type"] == 1]
+    tables = _tables(page, images)
+    drawn = _drawn_figures(page, blocks, list(tables))
+    # A table drawn inside a Figure, such as two boxes of a decision tree side by side, is part of the Figure.
+    tables = {rect: rows for rect, rows in tables.items() if not any(figure.contains(rect) for figure in drawn)}
+    for rect, rows in tables.items():
+        items.append(_Item(rect, page.rect, Block(Kind.TABLE, rows=rows)))
     # Text printed over a Figure (its labels and arrows) is part of it, and a table's text is in its cells.
-    taken = [pymupdf.Rect(table.bbox) for table in tables]
-    drawn = _drawn_figures(page, blocks, taken)
+    taken = list(tables)
     for number, rect in enumerate(drawn, start=1):
         image = _save_drawing(page, rect, folder / "figures" / f"{page.number + 1:04d}-d{number}.png")
         items.append(_Item(rect, page.rect, Block(Kind.FIGURE, image=image, box=_normalized(rect, page.rect))))
@@ -152,24 +165,44 @@ def _read_items(page: pymupdf.Page, folder: Path) -> list[_Item]:
     return _reading_order(items, page.rect.width)
 
 
+def _tables(page: pymupdf.Page, images: list[pymupdf.Rect]) -> dict[pymupdf.Rect, list[list[str]]]:
+    """Where the page has a table, and its cells' text, row by row."""
+    tables = {}
+    for table in page.find_tables().tables:
+        rows = [[_escape(" ".join((cell or "").split())) for cell in row] for row in table.extract()]
+        if table.row_count and _is_table(pymupdf.Rect(table.bbox), rows, images):
+            tables[pymupdf.Rect(table.bbox)] = rows
+    return tables
+
+
+def _is_table(rect: pymupdf.Rect, rows: list[list[str]], images: list[pymupdf.Rect]) -> bool:
+    """Whether what `find_tables` found reads as a table: not lines drawn over a photo, such as the bars between the
+    tiles of a photo grid, and with cells that hold more than a panel letter."""
+    if any((rect & image).get_area() >= rect.get_area() * _OVER_IMAGE for image in images):
+        return False
+    cells = [cell for row in rows for cell in row]
+    return sum(len(plain(cell)) > 1 for cell in cells) >= len(cells) * _TABLE_CELLS
+
+
 def _drawn_figures(page: pymupdf.Page, blocks: list[dict], tables: list[pymupdf.Rect]) -> list[pymupdf.Rect]:
-    """Where the page draws a Figure in vectors (a diagram or a chart): a cluster of drawings large enough, not a
-    table, drawing more than a frame around its text, and holding no more text than a Figure's labels. A cluster
-    over a bitmap takes the bitmap in: arrows and labels drawn on a photo are one Figure with it. Each box takes in
-    its stroke's edge."""
+    """Where the page draws a Figure in vectors (a diagram or a chart): a cluster of drawings large enough, not just
+    a table's ruling, drawing more than a frame around its text, and whose text reads as a Figure's labels. A
+    cluster over a bitmap takes the bitmap in: arrows and labels drawn on a photo are one Figure with it. Each box
+    takes in its stroke's edge."""
     images = [pymupdf.Rect(block["bbox"]) for block in blocks if block["type"] == 1]
     drawings = page.get_drawings()
     figures: list[pymupdf.Rect] = []
     for cluster in page.cluster_drawings(drawings=drawings):
         rect = (cluster + (-2, -2, 2, 2)) & page.rect
-        if any(rect.intersects(table) for table in tables):
+        paths = [drawing for drawing in drawings if rect.contains(drawing["rect"])]
+        if any(rect.intersects(table) and not _draws_beyond(paths, table) for table in tables):
             continue
         if rect.width >= page.rect.width * _PAGE_BORDER and rect.height >= page.rect.height * _PAGE_BORDER:
             continue
         over = [image for image in images if rect.intersects(image)]
         if not over and min(rect.width, rect.height) < _FIGURE_SIDE:
             continue
-        if not _draws_shapes([drawing for drawing in drawings if rect.contains(drawing["rect"])], cluster):
+        if not _draws_shapes(paths, cluster):
             continue
         for image in over:
             rect |= image
@@ -192,15 +225,28 @@ def _draws_shapes(paths: list[dict], cluster: pymupdf.Rect) -> bool:
     return len(shapes) > len(rectangles) or len(rectangles) >= _FIGURE_SHAPES
 
 
+def _draws_beyond(paths: list[dict], table: pymupdf.Rect) -> bool:
+    """Whether a cluster draws more than the table's ruling: a path outside the table, or a slanted line or a curve
+    (an arrow), which no table's ruling has."""
+    edge = table + (-2, -2, 2, 2)
+    for path in paths:
+        if not edge.contains(path["rect"]):
+            return True
+        for item in path["items"]:
+            if item[0] == "c" or (item[0] == "l" and item[1].x != item[2].x and item[1].y != item[2].y):
+                return True
+    return False
+
+
 def _holds_labels(blocks: list[dict], rect: pymupdf.Rect) -> bool:
-    """Whether the text inside `rect` reads as a Figure's labels: short, and no sentence among it."""
+    """Whether the text inside `rect` reads as a Figure's labels, however many: no text block among it is a
+    sentence. A boxed passage of prose stays text."""
     inside = [
         " ".join(span["text"] for line in block["lines"] for span in line["spans"]).strip()
         for block in blocks
         if block["type"] == 0 and rect.contains(_centre(block))
     ]
-    sentence = any(len(text.split()) >= _SENTENCE_WORDS and text.endswith((".", "!", "?")) for text in inside)
-    return sum(len(text) for text in inside) <= _FIGURE_TEXT and not sentence
+    return not any(len(text.split()) >= _SENTENCE_WORDS and text.endswith((".", "!", "?")) for text in inside)
 
 
 def _centre(block: dict) -> pymupdf.Point:
@@ -285,35 +331,60 @@ def _reading_order(items: list[_Item], width: float) -> list[_Item]:
     ordered, section = [], []
     for item in sorted(items, key=lambda item: (item.rect.y0, item.rect.x0)):
         if column(item) is None:
-            ordered += sorted(section, key=lambda item: (column(item), item.rect.y0))
-            ordered.append(item)
+            title = section[-1:] if _titles(section) else []
+            ordered += sorted(section[: len(section) - len(title)], key=lambda item: (column(item), item.rect.y0))
+            ordered += [*title, item]
             section = []
         else:
             section.append(item)
     return ordered + sorted(section, key=lambda item: (column(item), item.rect.y0))
 
 
+def _titles(section: list[_Item]) -> bool:
+    """Whether the section's last item, in the order its items start, is the title of what follows it across the
+    page: one line below everything in both columns, such as `References` over a list set across the page."""
+    *others, last = section or [None]
+    return bool(others) and last.rect.y0 >= max(other.rect.y1 for other in others) and last.rect.height < 2 * last.size
+
+
 def _body_size(pages: list[list[_Item]]) -> float:
+    """The size most of the running text is set in. Captions, the margins and a references list are often set
+    smaller, and a few pages of references would otherwise outweigh the body: a references list runs from its
+    title to the next text as large as the title."""
     sizes = Counter()
+    references = 0.0
     for items in pages:
         for item in items:
-            sizes.update(item.sizes)
+            text = plain(item.block.text)
+            if _REFERENCES_TITLE.fullmatch(text):
+                references = item.size
+            elif references and item.size >= references:
+                references = 0
+            if not references and not _in_margin(item.rect, item.page) and not _CAPTION.match(text):
+                sizes.update(item.sizes)
     return sizes.most_common(1)[0][0] if sizes else 0
 
 
-def _in_margin(item: _Item) -> bool:
-    return item.rect.y1 <= item.page.height * _MARGIN or item.rect.y0 >= item.page.height * (1 - _MARGIN)
+def _in_margin(rect: pymupdf.Rect, page: pymupdf.Rect) -> bool:
+    return rect.y1 <= page.height * _MARGIN or rect.y0 >= page.height * (1 - _MARGIN)
 
 
 def _running_key(text: str) -> str:
     return " ".join(re.sub(r"\d+", " ", plain(text)).split()).lower()
 
 
-def _running_texts(pages: list[list[_Item]]) -> set[str]:
+def _margin_keys(page: pymupdf.Page) -> set[str]:
+    """The page's texts in its top and bottom margins, as `_running_key` compares them."""
+    return {
+        _running_key(_inline(block["lines"]))
+        for block in page.get_text("dict", flags=_TEXT_FLAGS)["blocks"]
+        if block["type"] == 0 and _in_margin(pymupdf.Rect(block["bbox"]), page.rect)
+    }
+
+
+def _running_texts(pages: list[set[str]]) -> set[str]:
     """The margin texts that repeat on more than one page once their numbers are left out."""
-    seen = Counter()
-    for items in pages:
-        seen.update({_running_key(item.block.text) for item in items if item.size and _in_margin(item)})
+    seen = Counter(key for keys in pages for key in keys if key)
     return {key for key, count in seen.items() if count > 1}
 
 
@@ -322,7 +393,7 @@ def _classify(item: _Item, body_size: float, running: set[str]) -> Block:
     if block.kind != Kind.PARAGRAPH:
         return block
     text = plain(block.text)
-    if _in_margin(item) and (_PAGE_NUMBER.fullmatch(text) or _running_key(block.text) in running):
+    if _in_margin(item.rect, item.page) and (_PAGE_NUMBER.fullmatch(text) or _running_key(block.text) in running):
         return replace(block, kind=Kind.FURNITURE)
     if _REFERENCES_TITLE.fullmatch(text) or (item.size >= body_size * _HEADING_SIZE and len(text) <= 200):
         return replace(block, kind=Kind.HEADING)

@@ -267,3 +267,22 @@ def test_a_page_whose_answer_never_fits_becomes_a_failed_page(app, translator, d
     assert translator.batches == [[1, 2], [1], [1], [1], [2]]
     text = pdf_text(documents_dir / "Aldi" / "Endodoncia" / "Endodoncia (es).pdf")
     assert text.index("p. 1 del original") < text.index("Esta página no se pudo traducir") < text.index("ES: Page 2")
+
+
+def test_a_list_item_whose_text_keeps_the_books_marker_shows_one_marker(app, translator, documents_dir, tmp_path):
+    # Bug: Gemini kept the book's `➤` in the item's text and the writer added its own bullet: `• ➤ Principios`.
+    markers = ["➤", "•", "▪", "-", "–", "○"]
+    translator.scanned[1] = [
+        {"kind": "list_item", "text": f"{marker} Principio {n}"} for n, marker in enumerate(markers)
+    ]
+
+    app.wait_for(app.upload(scanned(tmp_path, [[]]))["id"])
+
+    folder = documents_dir / "Aldi" / "Endodoncia"
+    paragraphs = docx_paragraphs(folder / "Endodoncia (es).docx")
+    assert [paragraph for paragraph in paragraphs if "Principio" in paragraph] == [
+        f"Principio {n}" for n in range(len(markers))
+    ]
+    text = pdf_text(folder / "Endodoncia (es).pdf")
+    assert not any(marker in text for marker in ["➤", "▪", "–", "○"])
+    assert text.count("•") == len(markers)
