@@ -21,9 +21,9 @@ lock:
     uv lock
     uv sync --locked
 
-# The app on a free localhost port, without the native window; jobs and results under this worktree's jobs/
+# The app on a free localhost port, without the native window; jobs, results and settings under this worktree's jobs/
 dev:
-    uv run --locked python -m aldi --data-dir jobs --documents-dir jobs/Documentos
+    uv run --locked python -m aldi --data-dir jobs --documents-dir jobs/Documentos --config-dir jobs/config
 
 # A two-page Born-digital PDF built like the tests' ones, to drive `dev` without her documents
 test-pdf path="jobs/prueba.pdf":

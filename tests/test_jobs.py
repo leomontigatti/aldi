@@ -121,13 +121,13 @@ def test_past_jobs_are_listed_after_a_restart_and_open_their_folder(
         ("Visão geral", "done", ["Visão geral (es).pdf", "Visão geral (es).docx"]),
         ("Corrêa", "done", ["Corrêa (es).pdf", "Corrêa (es).docx"]),
     ]
-    assert app.post(f"/api/jobs/{jobs[0]['id']}/open-folder") == {}
+    assert app.send("POST", f"/api/jobs/{jobs[0]['id']}/open-folder") == {}
     assert opened == [documents_dir / "Aldi" / "Visão geral"]
 
 
 def test_opening_the_folder_of_an_unknown_job_is_refused(app, opened):
     with pytest.raises(urllib.error.HTTPError) as refused:
-        app.post("/api/jobs/nada/open-folder")
+        app.send("POST", "/api/jobs/nada/open-folder")
 
     assert refused.value.code == 404
     assert opened == []
@@ -144,7 +144,7 @@ def test_a_folder_that_cannot_be_opened_leaves_the_job_done(start_app, translato
 
     assert job["state"] == "done"
     with pytest.raises(urllib.error.HTTPError) as refused:
-        app.post(f"/api/jobs/{job['id']}/open-folder")
+        app.send("POST", f"/api/jobs/{job['id']}/open-folder")
     assert refused.value.code == 500
     assert json.load(refused.value)["error"] == "No se pudo abrir la carpeta."
 

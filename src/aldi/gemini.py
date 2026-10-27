@@ -1,12 +1,10 @@
 """The real Translator: Gemini through `google-genai`, on her own free-tier key (ADR 1)."""
 
 import json
-import os
 from collections.abc import Mapping, Sequence
-from pathlib import Path
 
 from google import genai
-from google.genai import types
+from google.genai import errors, types
 from pydantic import BaseModel
 
 from aldi.translator import TextTranslation
@@ -63,14 +61,15 @@ class GeminiTranslator:
         )
 
 
-def read_key(env_file: Path = Path(".env")) -> str:
-    """The key from `GEMINI_API_KEY` or `.env`, until the key-setup screen stores it in the settings."""
-    key = os.environ.get("GEMINI_API_KEY", "")
-    if not key and env_file.is_file():
-        for line in env_file.read_text(encoding="utf-8").splitlines():
-            name, _, value = line.partition("=")
-            if name.strip() == "GEMINI_API_KEY":
-                key = value.strip().strip("\"'")
-    if not key:
-        raise SystemExit("GEMINI_API_KEY is not set: put a key in .env (see .env.example).")
-    return key
+def validate_key(api_key: str) -> bool:
+    """Whether Gemini accepts the key, by reading the model's description: a call that spends no quota.
+
+    Raises when Gemini cannot be reached or fails in another way, so that is not taken for a wrong key.
+    """
+    try:
+        genai.Client(api_key=api_key).models.get(model=MODEL)
+    except errors.ClientError as error:
+        if error.code in (400, 401, 403):
+            return False
+        raise
+    return True
