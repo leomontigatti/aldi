@@ -79,7 +79,7 @@ def test_a_page_that_fails_twice_is_translated_on_its_third_try(app, translator,
     assert FAILED not in text
 
 
-def test_retrying_translates_only_the_failed_pages_and_rewrites_the_results(
+def test_retrying_translates_only_the_failed_pages_beside_the_first_results(
     app, translator, documents_dir, opened, tmp_path
 ):
     failing(translator, "Page 2 is about the pulp.", times=3)
@@ -91,14 +91,22 @@ def test_retrying_translates_only_the_failed_pages_and_rewrites_the_results(
 
     assert job["state"] == "done"
     assert job["failed_pages"] == []
+    assert job["results"] == ["Pulpa (es) (2).pdf", "Pulpa (es) (2).docx"]
     assert translator.requests == [["Page 2 is about the pulp."]]
     folder = documents_dir / "Aldi" / "Pulpa"
-    assert sorted(path.name for path in folder.iterdir()) == ["Pulpa (es).docx", "Pulpa (es).pdf"]
-    text = pdf_text(folder / "Pulpa (es).pdf")
+    # She may have edited the first results, or have them open in Word: a retry never writes over them.
+    assert sorted(path.name for path in folder.iterdir()) == [
+        "Pulpa (es) (2).docx",
+        "Pulpa (es) (2).pdf",
+        "Pulpa (es).docx",
+        "Pulpa (es).pdf",
+    ]
+    assert FAILED in pdf_text(folder / "Pulpa (es).pdf")
+    text = pdf_text(folder / "Pulpa (es) (2).pdf")
     assert text.index("ES: Page 1") < text.index("ES: Page 2") < text.index("ES: Page 3")
     assert FAILED not in text
-    assert pdf_images(folder / "Pulpa (es).pdf") == 0
-    docx_text, docx_images = docx_text_and_images(folder / "Pulpa (es).docx")
+    assert pdf_images(folder / "Pulpa (es) (2).pdf") == 0
+    docx_text, docx_images = docx_text_and_images(folder / "Pulpa (es) (2).docx")
     assert docx_text.index("ES: Page 1") < docx_text.index("ES: Page 2") < docx_text.index("ES: Page 3")
     assert docx_images == []
     assert opened == [folder, folder]

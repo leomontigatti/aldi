@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
-from aldi.results import deliver, document_name, redeliver
+from aldi.results import deliver, document_name
 from aldi.source import SourcePage, read_pages, render_page
 from aldi.translator import Offline, QuotaExhausted, Translator
 from aldi.writer import TranslatedPage, write_reading_version
@@ -76,7 +76,7 @@ class JobStore:
         return self.get(job.id)
 
     def retry(self, job_id: str) -> Job | None:
-        """Translates a finished Job's Failed Pages again and rewrites its results; None when it has none."""
+        """Translates a finished Job's Failed Pages again, delivering new results beside the first; None if none."""
         with self._lock:
             job = self._jobs.get(job_id)
             if not job or job.state != "done" or not job.failed_pages:
@@ -131,15 +131,8 @@ class JobStore:
             job = self.get(job_id)
             stem = f"{job.name} (es)"
             results = write_reading_version(translated, folder, stem)
-            if job.results:
-                # A retry of the Failed Pages rewrites the files this Job delivered before.
-                delivered = [
-                    redeliver(result, Path(job.folder) / old) for result, old in zip(results, job.results, strict=True)
-                ]
-            else:
-                delivered = [
-                    deliver(result, self._documents_dir, job.name, f"{stem}{result.suffix}") for result in results
-                ]
+            # A retry of the Failed Pages lands beside the first results, numbered: she may have edited those.
+            delivered = [deliver(result, self._documents_dir, job.name, f"{stem}{result.suffix}") for result in results]
             self._update(
                 job_id,
                 state="done",
