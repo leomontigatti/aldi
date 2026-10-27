@@ -32,6 +32,18 @@ def wait_until(condition, timeout=10):
         time.sleep(0.02)
 
 
+# How BabelDOC, under `pdf2zh-next`, ends a prompt for a batch of paragraphs (a JSON array follows) and for one.
+_LAYOUT_BATCH = "## Here is the input:"
+_LAYOUT_SINGLE = "Now translate the following text:"
+
+
+def answer_layout_prompt(prompt: str) -> str:
+    if _LAYOUT_BATCH in prompt:
+        paragraphs = json.loads(prompt.split(_LAYOUT_BATCH, 1)[1])
+        return json.dumps([{"id": item["id"], "output": f"ES: {item['input']}"} for item in paragraphs])
+    return "ES: " + prompt.split(_LAYOUT_SINGLE, 1)[1].strip()
+
+
 class FakeTranslator:
     """Stands in for Gemini at the translator seam: each text comes back prefixed with `ES:`.
 
@@ -47,6 +59,8 @@ class FakeTranslator:
         self.scanned_terms: dict[int, dict[str, str]] = {}
         self.terms_given: list[dict[str, str]] = []
         """The Term List each Page Batch was sent with, in order."""
+        self.layout_prompts: list[str] = []
+        """Every prompt `pdf2zh-next` sent for a Layout-kept Translation, in order."""
 
     def translate_texts(self, texts: Sequence[str], terms: Mapping[str, str]) -> TextTranslation:
         self.requests.append(list(texts))
@@ -68,6 +82,12 @@ class FakeTranslator:
 
     def page_blocks(self, number: int) -> list[dict]:
         return self.scanned.get(number, [{"kind": "paragraph", "text": f"ES: Page {number}"}])
+
+    def answer_layout_prompt(self, prompt: str) -> str:
+        """Answers `pdf2zh-next`'s prompts as Gemini would, each text prefixed with `ES:`: a batch of paragraphs as
+        the JSON array it asks for, a single paragraph as its text."""
+        self.layout_prompts.append(prompt)
+        return answer_layout_prompt(prompt)
 
 
 def build_born_digital_pdf(path: Path, pages: Sequence[Sequence[str]]) -> Path:
@@ -119,9 +139,9 @@ def build_mixed_pdf(path: Path, parts: Sequence[Path]) -> Path:
 
 
 class FakeGemini:
-    """Stands in for google-genai's client: every model answers each block prefixed with `ES:`, and each page of a Page
-    Batch as one paragraph `ES: Page N`, unless `fail` scripted an error for that model's next request. A Gemma model
-    answers 500 to a response schema, as Gemma does."""
+    """Stands in for google-genai's client: every model answers each block prefixed with `ES:`, each page of a Page
+    Batch as one paragraph `ES: Page N`, and `pdf2zh-next`'s prompts as `FakeTranslator` does, unless `fail` scripted
+    an error for that model's next request. A Gemma model answers 500 to a response schema, as Gemma does."""
 
     def __init__(self):
         self.models = self
@@ -147,6 +167,8 @@ class FakeGemini:
             ]
             pages = [{"page": n, "blocks": [{"kind": "paragraph", "text": f"ES: Page {n}"}]} for n in numbers]
             return SimpleNamespace(text=json.dumps({"pages": pages, "terms": []}))
+        if not config.response_mime_type:
+            return SimpleNamespace(text=answer_layout_prompt(contents))
         blocks = json.loads(contents)["blocks"]
         return SimpleNamespace(text=json.dumps({"spanish": [f"ES: {block}" for block in blocks], "terms": []}))
 

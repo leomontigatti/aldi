@@ -1,4 +1,4 @@
-"""The Estimate: how long a Reading Version of some pages takes, in minutes or hours, never in requests."""
+"""The Estimate: how long a Job on some pages takes, in minutes or hours, never in requests."""
 
 import math
 from collections.abc import Sequence
@@ -8,11 +8,14 @@ from collections.abc import Sequence
 # and a Page Batch of four needs a quarter of the requests.
 _BORN_DIGITAL = 20
 _SCANNED = 15
+# Not measured: BabelDOC lays out each page on her laptop, then sends its paragraphs to flash in batches.
+_LAYOUT_KEPT = 30
 
 
-def estimate(scanned: Sequence[bool]) -> str:
-    """The line she reads before she starts, for pages that are scanned or not, one flag a page."""
-    seconds = sum(_SCANNED if page else _BORN_DIGITAL for page in scanned)
+def estimate(scanned: Sequence[bool], layout: bool = False) -> str:
+    """The line she reads before she starts, for pages that are scanned or not, one flag a page; with `layout`, for
+    a Layout-kept Translation of them, which takes only pages with text."""
+    seconds = len(scanned) * _LAYOUT_KEPT if layout else sum(_SCANNED if page else _BORN_DIGITAL for page in scanned)
     minutes = max(1, math.ceil(seconds / 60))
     if minutes == 1:
         return "Tiempo estimado: un minuto"

@@ -59,6 +59,8 @@ class Job:
     notice: str = ""
     """The Spanish line the UI shows under the Job's state besides the progress, such as why it is paused or an
     Error Report's."""
+    output_mode: str = "reading"
+    """The Output Mode: `reading`, the Reading Version, or `layout`, the Layout-kept Translation."""
 
 
 @dataclass(frozen=True)
@@ -73,6 +75,14 @@ class SourceDocument:
     def pages(self, page_range: str) -> list[int]:
         """The page numbers `page_range` names; raises `PageRangeError` with what she is told when it names none."""
         return parse_page_range(page_range, len(self.scanned))
+
+    def keeps_layout(self, pages: Sequence[int]) -> bool:
+        """Whether a Layout-kept Translation of `pages` is offered: only when every one has a text layer."""
+        return not any(self.scanned[number - 1] for number in pages)
+
+
+class LayoutNotOffered(Exception):
+    """A Layout-kept Translation asked for pages that are not all born-digital."""
 
 
 class JobStore:
@@ -133,16 +143,19 @@ class JobStore:
         with self._lock:
             return self._dropped.get(document_id)
 
-    def start(self, document_id: str, page_range: str) -> Job | None:
-        """Starts the Job of a dropped PDF on its Page Range; None when no such PDF waits.
+    def start(self, document_id: str, page_range: str, output_mode: str = "reading") -> Job | None:
+        """Starts the Job of a dropped PDF on its Page Range in an Output Mode; None when no such PDF waits.
 
-        Raises `PageRangeError` when the Page Range names none of its pages; the PDF then still waits.
+        Raises `PageRangeError` when the Page Range names none of its pages, and `LayoutNotOffered` when the
+        Layout-kept Translation is asked for pages without text; the PDF then still waits.
         """
         with self._lock:
             document = self._dropped.get(document_id)
             if not document:
                 return None
             pages = document.pages(page_range)
+            if output_mode == "layout" and not document.keeps_layout(pages):
+                raise LayoutNotOffered
             del self._dropped[document_id]
             number = max((job.number for job in self._jobs.values()), default=0) + 1
             job = Job(
@@ -151,6 +164,7 @@ class JobStore:
                 pages=len(pages),
                 page_range=format_page_range(pages, len(document.scanned)),
                 number=number,
+                output_mode="layout" if output_mode == "layout" else "reading",
             )
             self._jobs[job.id] = job
         folder = self._folder(job.id)
@@ -191,58 +205,35 @@ class JobStore:
 
     def _run(self, job_id: str) -> None:
         folder = self._folder(job_id)
-        source: list[SourcePage] = []
+        scanned: list[bool] = []
+        failed: list[int] = []
+        failure = None
         problem = "Crash while translating"
         try:
             job = self.get(job_id)
-            pages = parse_page_range(job.page_range, len(inspect(folder / "source.pdf")))
-            source = read_pages(folder / "source.pdf", folder, set(pages))
-            self._update(job_id, state="running", pages=len(source))
-            terms: dict[str, str] = {}
-            translated = []
-            failed = []
-            failure = None
-            for index, page in enumerate(source):
-                done = _page_file(folder, page.number)
-                if not done.exists():
-                    if self._closing.is_set():
-                        return
-                    batch = _page_batch(source[index:], folder) if page.scanned else [page]
-                    answers = (
-                        self._read_scanned(job_id, batch, folder, terms)
-                        if page.scanned
-                        else [self._translate(job_id, page, terms)]
-                    )
-                    for batch_page, answer in zip(batch, answers, strict=True):
-                        _page_file(folder, batch_page.number).write_text(
-                            json.dumps(answer, ensure_ascii=False), encoding="utf-8"
-                        )
-                saved = json.loads(done.read_text(encoding="utf-8"))
-                terms = saved["terms"]
-                if saved.get("failed"):
-                    image = Path("pages") / f"{page.number:04d}.png"
-                    render_page(folder / "source.pdf", page.number, folder / image)
-                    failed.append(page.number)
-                    failure = failure or saved.get("report")
-                    translated.append(TranslatedPage(page.number, [], failed_image=image))
-                else:
-                    blocks = [Block.from_dict(block) for block in saved["blocks"]]
-                    translated.append(TranslatedPage(page.number, blocks))
-                self._update(job_id, page=len(translated))
-            problem = "Result could not be written"
-            job = self.get(job_id)
-            stem = f"{job.name} (es)"
-            results = write_reading_version(translated, folder, stem)
+            scanned = inspect(folder / "source.pdf")
+            pages = parse_page_range(job.page_range, len(scanned))
+            scanned = [scanned[number - 1] for number in pages]
+            if job.output_mode == "layout":
+                kept = self._layout_kept(job_id, folder, pages)
+                problem = "Result could not be written"
+                results = [(kept, f"{job.name} (es, diseño).pdf")]
+            else:
+                translated, failed, failure = self._translate_pages(job_id, folder, pages)
+                problem = "Result could not be written"
+                stem = f"{job.name} (es)"
+                results = [(result, f"{stem}{result.suffix}") for result in write_reading_version(translated, folder, stem)]
             # A retry of the Failed Pages lands beside the first results, numbered: she may have edited those.
-            delivered = [deliver(result, self._documents_dir, job.name, f"{stem}{result.suffix}") for result in results]
+            delivered = [deliver(result, self._documents_dir, job.name, filename) for result, filename in results]
         except _Closing:
             return
         except Exception as error:
             (folder / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
-            notice = self._report(problem, reports.describe(error), source, []) if reports.is_bug(error) else ""
+            details = reports.describe(error)
+            notice = self._report(job_id, problem, details, scanned, []) if reports.is_bug(error) else ""
             self._update(job_id, state="failed", notice=notice)
             return
-        notice = self._report("Failed Pages", reports.ErrorDetails(**failure), source, failed) if failure else ""
+        notice = self._report(job_id, "Failed Pages", reports.ErrorDetails(**failure), scanned, failed) if failure else ""
         self._update(
             job_id,
             state="done",
@@ -256,6 +247,69 @@ class JobStore:
         except OSError:
             # Her files are written and listed; a file browser that did not open is no reason to fail the Job.
             (folder / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
+
+    def _translate_pages(
+        self, job_id: str, folder: Path, pages: Sequence[int]
+    ) -> tuple[Sequence[TranslatedPage], Sequence[int], dict | None]:
+        """Each page's Spanish for the Reading Version, its Failed Pages and what the first of them reports."""
+        source = read_pages(folder / "source.pdf", folder, set(pages))
+        self._update(job_id, state="running", pages=len(source))
+        terms: dict[str, str] = {}
+        translated = []
+        failed = []
+        failure = None
+        for index, page in enumerate(source):
+            done = _page_file(folder, page.number)
+            if not done.exists():
+                if self._closing.is_set():
+                    raise _Closing
+                batch = _page_batch(source[index:], folder) if page.scanned else [page]
+                answers = (
+                    self._read_scanned(job_id, batch, folder, terms)
+                    if page.scanned
+                    else [self._translate(job_id, page, terms)]
+                )
+                for batch_page, answer in zip(batch, answers, strict=True):
+                    _page_file(folder, batch_page.number).write_text(
+                        json.dumps(answer, ensure_ascii=False), encoding="utf-8"
+                    )
+            saved = json.loads(done.read_text(encoding="utf-8"))
+            terms = saved["terms"]
+            if saved.get("failed"):
+                image = Path("pages") / f"{page.number:04d}.png"
+                render_page(folder / "source.pdf", page.number, folder / image)
+                failed.append(page.number)
+                failure = failure or saved.get("report")
+                translated.append(TranslatedPage(page.number, [], failed_image=image))
+            else:
+                blocks = [Block.from_dict(block) for block in saved["blocks"]]
+                translated.append(TranslatedPage(page.number, blocks))
+            self._update(job_id, page=len(translated))
+        return translated, failed, failure
+
+    def _layout_kept(self, job_id: str, folder: Path, pages: Sequence[int]) -> Path:
+        """The Layout-kept Translation's PDF. BabelDOC lays out every page before it asks Gemini anything, so the
+        progress moves only when it is done."""
+        # Imported here: BabelDOC and its layout model weigh on the app's start, and most Jobs never need them.
+        from aldi.layout import Cancelled, write_layout_kept
+
+        self._update(job_id, state="running", pages=len(pages))
+        (folder / "layout").mkdir(exist_ok=True)
+        try:
+            result = self._ask(
+                job_id,
+                lambda: write_layout_kept(
+                    folder / "source.pdf",
+                    pages,
+                    folder / "layout",
+                    self._translator.answer_layout_prompt,
+                    self._closing.is_set,
+                ),
+            )
+        except Cancelled as cancelled:
+            raise _Closing from cancelled
+        self._update(job_id, page=len(pages))
+        return result
 
     def _translate(self, job_id: str, page: SourcePage, terms: dict[str, str]) -> dict:
         """What a page's `pages/NNNN.json` holds once it is done, Failed Page or not."""
@@ -295,17 +349,19 @@ class JobStore:
         return answers
 
     def _report(
-        self, problem: str, details: reports.ErrorDetails, source: Sequence[SourcePage], failed: Sequence[int]
+        self, job_id: str, problem: str, details: reports.ErrorDetails, scanned: Sequence[bool], failed: Sequence[int]
     ) -> str:
-        """Files an Error Report about this Job; returns what she is told about it."""
-        with_text = sum(1 for page in source if not page.scanned)
-        if not source:
+        """Files an Error Report about this Job, whose pages are scanned or not as `scanned` says; returns what she
+        is told about it."""
+        with_text = sum(not page for page in scanned)
+        if not scanned:
             kind = "unknown"
-        elif with_text == len(source):
+        elif with_text == len(scanned):
             kind = "born-digital"
         else:
             kind = "mixed" if with_text else "scanned"
-        sent = self._reporter.report(problem, details, Context("Reading Version", kind, len(source), list(failed)))
+        mode = "Layout-kept Translation" if self.get(job_id).output_mode == "layout" else "Reading Version"
+        sent = self._reporter.report(problem, details, Context(mode, kind, len(scanned), list(failed)))
         return reports.SENT if sent else reports.QUEUED
 
     def _ask(self, job_id: str, request: Callable[[], _Answer]) -> _Answer:

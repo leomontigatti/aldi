@@ -18,6 +18,9 @@ MODEL_CHAIN = ("gemini-3.5-flash", "gemini-3.5-flash-lite", "gemma-4-26b-a4b-it"
 BUSY_WAITS = (10, 30, 90)
 # Seconds a model that answered 429 is skipped when the answer gives no `retryDelay`: a minute's quota is back by then.
 QUOTA_RETRY = 60
+# Mantener el diseño keeps to flash (ADR 3): the free tier's 5 requests a minute run out within each minute, so a
+# 429 is waited out this many times in a row before it is a Quota Pause.
+LAYOUT_QUOTA_WAITS = 3
 
 _TEXT_INSTRUCTION = """\
 You translate a dentistry textbook or journal article from English or Portuguese into Spanish for a dentistry \
@@ -120,14 +123,34 @@ class GeminiTranslator:
         contents.append(types.Part.from_text(text=json.dumps({"terms": dict(terms)}, ensure_ascii=False)))
         return self._generate(contents, _BATCH_INSTRUCTION, PageBatchAnswer, _BATCH_SHAPE).text or ""
 
+    def answer_layout_prompt(self, prompt: str) -> str:
+        model = self._chain[0]
+        for _ in range(LAYOUT_QUOTA_WAITS):
+            try:
+                return self._generate(prompt, chain=(model,)).text or ""
+            except QuotaExhausted:
+                wait = self._out_of_quota_until.get(model, 0) - self._clock()
+                if wait <= 0:
+                    # Busy after every wait, not out of quota.
+                    raise
+                self._sleep(wait)
+        return self._generate(prompt, chain=(model,)).text or ""
+
     def _generate(
-        self, contents: str | list[types.Part], instruction: str, schema: type[BaseModel], shape: str
+        self,
+        contents: str | list[types.Part],
+        instruction: str | None = None,
+        schema: type[BaseModel] | None = None,
+        shape: str = "",
+        chain: Sequence[str] | None = None,
     ) -> types.GenerateContentResponse:
-        for model in self._chain:
+        """Gemini's answer from the first model of `chain`, the Model Chain by default, that takes the request; a
+        JSON one matching `schema` when there is one."""
+        for model in chain or self._chain:
             gemma = model.startswith("gemma")
             config = types.GenerateContentConfig(
-                system_instruction=instruction + shape if gemma else instruction,
-                response_mime_type="application/json",
+                system_instruction=(instruction + shape if gemma else instruction) if instruction else None,
+                response_mime_type="application/json" if schema else None,
                 response_schema=None if gemma else schema,
                 max_output_tokens=32768 if gemma else 65536,
             )

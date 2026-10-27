@@ -15,7 +15,7 @@ from pathlib import Path
 import platformdirs
 
 from aldi.estimate import estimate
-from aldi.jobs import JobStore, SourceDocument
+from aldi.jobs import JobStore, LayoutNotOffered, SourceDocument
 from aldi.page_range import PageRangeError
 from aldi.reports import GitHub, Reporter
 from aldi.results import open_folder as open_in_file_browser
@@ -30,6 +30,9 @@ _NOT_A_PDF = "Este archivo no es un PDF."
 _NO_KEY = "Primero guarda tu clave de Gemini."
 _INVALID_KEY = "Esa clave no funciona. Revisa que la copiaste entera, sin espacios, y vuelve a pegarla."
 _KEY_UNCHECKED = "No se pudo comprobar la clave. Revisa tu conexión a internet e inténtalo de nuevo."
+_LAYOUT_NOT_OFFERED = (
+    "Mantener el diseño solo se puede elegir si todas las páginas elegidas tienen texto seleccionable."
+)
 
 
 class AldiServer(ThreadingHTTPServer):
@@ -180,25 +183,28 @@ class _Handler(BaseHTTPRequestHandler):
         except NotAPdfError:
             return self._json(HTTPStatus.BAD_REQUEST, {"error": _NOT_A_PDF})
         body = {"id": document.id, "name": document.name, "pages": len(document.scanned)}
-        self._json(HTTPStatus.CREATED, body | {"estimate": estimate(document.scanned)})
+        self._json(HTTPStatus.CREATED, body | _estimates(document, range(1, len(document.scanned) + 1)))
 
     def _start(self):
         """Starts the Job of a dropped PDF on the Page Range she typed."""
         try:
             body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
             document_id, page_range = str(body["document"]), str(body.get("pages") or "")
-        except (ValueError, TypeError, KeyError):
+            output_mode = "layout" if body.get("output_mode") == "layout" else "reading"
+        except (ValueError, TypeError, KeyError, AttributeError):
             return self._json(HTTPStatus.BAD_REQUEST, {"error": "No encontrado."})
         try:
-            job = self.server.jobs.start(document_id, page_range)
+            job = self.server.jobs.start(document_id, page_range, output_mode)
         except PageRangeError as error:
             return self._json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+        except LayoutNotOffered:
+            return self._json(HTTPStatus.BAD_REQUEST, {"error": _LAYOUT_NOT_OFFERED})
         if not job:
             return self._json(HTTPStatus.NOT_FOUND, {"error": "No encontrado."})
         self._json(HTTPStatus.CREATED, asdict(job))
 
     def _estimate(self, document_id: str):
-        """How long the Page Range in `?pages=` takes, or why it names no pages."""
+        """How long the Page Range in `?pages=` takes in each Output Mode it allows, or why it names no pages."""
         document: SourceDocument | None = self.server.jobs.dropped(document_id)
         if not document:
             return self._json(HTTPStatus.NOT_FOUND, {"error": "No encontrado."})
@@ -207,7 +213,7 @@ class _Handler(BaseHTTPRequestHandler):
             pages = document.pages(query.get("pages", [""])[0])
         except PageRangeError as error:
             return self._json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
-        self._json(HTTPStatus.OK, {"pages": len(pages), "estimate": estimate([document.scanned[n - 1] for n in pages])})
+        self._json(HTTPStatus.OK, {"pages": len(pages)} | _estimates(document, pages))
 
     def _update(self):
         try:
@@ -251,6 +257,13 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(body)
+
+
+def _estimates(document: SourceDocument, pages) -> dict:
+    """The Estimate of `pages` for the Reading Version, and for Mantener el diseño, None when it is not offered."""
+    scanned = [document.scanned[number - 1] for number in pages]
+    layout = estimate(scanned, layout=True) if document.keeps_layout(pages) else None
+    return {"estimate": estimate(scanned), "layout_estimate": layout}
 
 
 def main(argv: list[str] | None = None, open_window: Callable[[str], None] | None = None) -> None:

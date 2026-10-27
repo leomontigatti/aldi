@@ -62,6 +62,13 @@ class Translator(Protocol):
         """
         ...
 
+    def answer_layout_prompt(self, prompt: str) -> str:
+        """Answer a prompt `pdf2zh-next` wrote for a Layout-kept Translation, with the text Gemini gives.
+
+        The prompt holds its own instructions and the shape of the answer it expects; `pdf2zh-next` checks it.
+        """
+        ...
+
 
 class QuotaExhausted(Exception):
     """No model in the Model Chain takes a request now: each is out of quota, or stays busy. A Quota Pause."""
