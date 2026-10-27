@@ -14,6 +14,7 @@ from pathlib import Path
 
 import platformdirs
 
+from aldi import instance
 from aldi.estimate import estimate
 from aldi.jobs import JobStore, LayoutNotOffered, SourceDocument, closing_wait
 from aldi.page_range import PageRangeError
@@ -55,6 +56,8 @@ class AldiServer(ThreadingHTTPServer):
         self.updates = updates
         self.close_window: Callable[[], None] = lambda: None
         """Closes the app's window, as `Actualizar` does once the update is ready; `main` sets it."""
+        self.focus_window: Callable[[], None] = lambda: None
+        """Brings the app's window to the front, as a second launch asks; `main` sets it."""
 
     def server_close(self):
         super().server_close()
@@ -168,12 +171,19 @@ class _Handler(BaseHTTPRequestHandler):
             return self._retry(path.removeprefix("/api/jobs/").removesuffix("/retry"))
         if path == "/api/update":
             return self._update()
+        if path == "/api/window/front":
+            # A second launch of the app, which ends once its window is here.
+            self.server.focus_window()
+            return self._json(HTTPStatus.OK, {})
         if path not in ("/api/documents", "/api/jobs"):
             return self._json(HTTPStatus.NOT_FOUND, {"error": "No encontrado."})
         if not self.server.settings.key:
             return self._json(HTTPStatus.CONFLICT, {"error": _NO_KEY})
         if path == "/api/jobs":
             return self._start()
+        self._drop()
+
+    def _drop(self):
         length = int(self.headers.get("Content-Length") or 0)
         if not 0 < length <= _MAX_UPLOAD:
             return self._json(HTTPStatus.BAD_REQUEST, {"error": _NOT_A_PDF})
@@ -269,10 +279,16 @@ def _estimates(document: SourceDocument, pages) -> dict:
     return {"estimate": estimate(scanned), "layout_estimate": layout}
 
 
-def main(argv: list[str] | None = None, open_window: Callable[[str], None] | None = None) -> None:
+def main(
+    argv: list[str] | None = None,
+    open_window: Callable[[str], None] | None = None,
+    focus_window: Callable[[], None] | None = None,
+) -> None:
     """`aldi`: the app in its own window until she closes it; `aldi setup`: the install line's last step.
 
-    `open_window` shows the app's URL and returns when the window is closed; pywebview's by default.
+    `open_window` shows the app's URL and returns when the window is closed, and `focus_window` brings that window
+    to the front; pywebview's by default. A launch while the app already runs on the same data folder brings the
+    running app's window to the front and ends there.
     """
     argv = sys.argv[1:] if argv is None else argv
     if argv[:1] == ["setup"]:
@@ -291,6 +307,11 @@ def main(argv: list[str] | None = None, open_window: Callable[[str], None] | Non
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--no-window", action="store_true", help="serve the app until Ctrl-C, without its window")
     args = parser.parse_args(argv)
+    lock = instance.hold(args.data_dir)
+    if lock is None:
+        if not instance.bring_to_front(args.data_dir):
+            print("Aldi ya está abierto.", file=sys.stderr)
+        return
     settings = Settings(args.config_dir, dev_env_file=Path(".env"))
 
     def make_translator(key: str, wait: Callable[[float], None]) -> GeminiTranslator:
@@ -310,6 +331,7 @@ def main(argv: list[str] | None = None, open_window: Callable[[str], None] | Non
     )
     host, port = server.server_address[:2]
     url = f"http://{host}:{port}/"
+    instance.serving(args.data_dir, port)
     print(f"Aldi: {url}", flush=True)
     if args.no_window:
         try:
@@ -322,7 +344,8 @@ def main(argv: list[str] | None = None, open_window: Callable[[str], None] | Non
     serving = threading.Thread(target=server.serve_forever, daemon=True, name="aldi-server")
     serving.start()
     if open_window is None:
-        open_window, server.close_window = _native_window, _close_native_window
+        open_window, server.close_window, focus_window = _native_window, _close_native_window, _focus_native_window
+    server.focus_window = focus_window or (lambda: None)
     try:
         open_window(url)
     finally:
@@ -337,6 +360,17 @@ def _native_window(url: str) -> None:
 
     webview.create_window("Aldi", url, width=960, height=800, min_size=(560, 480))
     webview.start()
+
+
+def _focus_native_window() -> None:
+    import webview
+
+    for window in list(webview.windows):
+        window.restore()
+        window.show()
+        # pywebview has no call for "to the front": on top for a moment brings it there on every system.
+        window.on_top = True
+        window.on_top = False
 
 
 def _close_native_window() -> None:
