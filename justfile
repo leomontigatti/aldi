@@ -50,6 +50,11 @@ gemini-measure *args:
 test-memory *args:
     uv run --locked python scripts/test_memory.py "$@"
 
+# PDF pages side by side in one PNG, as evidence of a real-document check: OUT.png PDF:PAGES [PDF:PAGES ...]
+[positional-arguments]
+side-by-side *args:
+    uv run --locked python scripts/side_by_side.py "$@"
+
 # All linters and formatters on every file (fixes what it can; rerun to confirm)
 lint:
     uv run pre-commit run --all-files --show-diff-on-failure

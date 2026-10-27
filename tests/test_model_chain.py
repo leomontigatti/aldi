@@ -207,6 +207,8 @@ def test_the_real_client_goes_through_the_system_proxy(monkeypatch, scheme):
     with socket.socket() as proxy:
         proxy.bind(("127.0.0.1", 0))
         proxy.listen()
+        # httpx prefers the lowercase name: a developer's own `https_proxy` would win over this one.
+        monkeypatch.delenv("https_proxy", raising=False)
         monkeypatch.setenv("HTTPS_PROXY", f"{scheme}127.0.0.1:{proxy.getsockname()[1]}")
         monkeypatch.delenv("NO_PROXY", raising=False)
         monkeypatch.delenv("no_proxy", raising=False)
