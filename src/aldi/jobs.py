@@ -10,10 +10,12 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from aldi.results import deliver, document_name
-from aldi.source import read_pages
+from aldi.source import SourcePage, read_pages, render_page
 from aldi.translator import Offline, QuotaExhausted, TextTranslation, Translator
 from aldi.writer import TranslatedPage, write_reading_version
 
+# A page gets two retries before it becomes a Failed Page.
+_ATTEMPTS = 3
 QUOTA_PAUSE_NOTICE = "En pausa hasta que Gemini vuelva a estar disponible"
 OFFLINE_NOTICE = "Sin conexión a internet"
 # Seconds before a paused Job asks Gemini again: a per-minute quota is back by then, a daily one costs a few 429s.
@@ -38,36 +40,71 @@ class Job:
     """The delivered files' names, inside `<Documents>/Aldi/<name>/`."""
     folder: str = ""
     """The results' folder, for the UI to show."""
+    number: int = 0
+    """The Job's place in the order she dropped them, from 1: the queue runs and lists Jobs in this order."""
+    failed_pages: list[int] = field(default_factory=list)
+    """The Failed Pages of a finished Job, by their number in the original."""
     notice: str = ""
     """What the UI says under the state besides the progress, such as why a Job is paused."""
 
 
 class JobStore:
+    """Every Job ever started; Jobs a closed app left unfinished run again, from their first page not yet done.
+
+    A page is done when its `pages/NNNN.json` exists: it holds the page's Spanish and the Term List after it, or
+    `"failed": true` for a Failed Page, which only a retry of the Job's Failed Pages translates again.
+    """
+
     def __init__(
         self,
         data_dir: Path,
         documents_dir: Path,
         translator: Translator,
+        open_folder: Callable[[Path], None],
         sleep: Callable[[float], None] | None = None,
     ):
         self._jobs_dir = data_dir / "jobs"
         self._documents_dir = documents_dir
         self._translator = translator
+        self._open_folder = open_folder
+        self._lock = threading.Lock()
         self._closing = threading.Event()
         self._sleep = sleep or self._closing.wait
-        self._lock = threading.Lock()
         self._jobs: dict[str, Job] = {}
         # One Job at a time: they would otherwise compete for the same free quota.
         self._worker = ThreadPoolExecutor(max_workers=1, thread_name_prefix="aldi-job")
+        saved = [Job(**json.loads(path.read_text(encoding="utf-8"))) for path in self._jobs_dir.glob("*/job.json")]
+        for job in sorted(saved, key=lambda job: job.number):
+            self._jobs[job.id] = job
+            if job.state in ("queued", "running"):
+                self._update(job.id, state="queued")
+                self._worker.submit(self._run, job.id)
 
     def start(self, filename: str, pdf: bytes) -> Job:
-        job = Job(id=uuid.uuid4().hex[:12], name=document_name(filename))
+        with self._lock:
+            number = max((job.number for job in self._jobs.values()), default=0) + 1
+            job = Job(id=uuid.uuid4().hex[:12], name=document_name(filename), number=number)
+            self._jobs[job.id] = job
         folder = self._folder(job.id)
         (folder / "pages").mkdir(parents=True)
         (folder / "source.pdf").write_bytes(pdf)
         self._save(job)
         self._worker.submit(self._run, job.id)
         return self.get(job.id)
+
+    def retry(self, job_id: str) -> Job | None:
+        """Translates a finished Job's Failed Pages again, delivering new results beside the first; None if none."""
+        with self._lock:
+            job = self._jobs.get(job_id)
+            if not job or job.state != "done" or not job.failed_pages:
+                return None
+            # Set under the lock so a second click cannot queue the same Job twice.
+            job.state = "queued"
+        for number in job.failed_pages:
+            (self._folder(job_id) / "pages" / f"{number:04d}.json").unlink(missing_ok=True)
+        self._update(job_id, failed_pages=[])
+        self._worker.submit(self._run, job_id)
+        return self.get(job_id)
 
     def get(self, job_id: str) -> Job | None:
         with self._lock:
@@ -79,8 +116,9 @@ class JobStore:
             return [Job(**asdict(job)) for job in self._jobs.values()]
 
     def close(self) -> None:
+        """Stops after the page in hand; the Job resumes from the next page when the app starts again."""
         self._closing.set()
-        self._worker.shutdown(wait=False, cancel_futures=True)
+        self._worker.shutdown(wait=True, cancel_futures=True)
 
     def _run(self, job_id: str) -> None:
         folder = self._folder(job_id)
@@ -89,28 +127,66 @@ class JobStore:
             self._update(job_id, state="running", pages=len(source))
             terms: dict[str, str] = {}
             translated = []
+            failed = []
             for page in source:
-                answer = self._translate(job_id, page.texts, terms) if page.texts else None
-                texts = answer.texts if answer else []
-                terms = answer.terms if answer else terms
-                (folder / "pages" / f"{page.number:04d}.json").write_text(
-                    json.dumps({"source": page.texts, "spanish": texts}, ensure_ascii=False), encoding="utf-8"
-                )
-                translated.append(TranslatedPage(page.number, texts))
+                done = folder / "pages" / f"{page.number:04d}.json"
+                if not done.exists():
+                    if self._closing.is_set():
+                        return
+                    saved = self._translate(job_id, page, terms)
+                    done.write_text(json.dumps(saved, ensure_ascii=False), encoding="utf-8")
+                saved = json.loads(done.read_text(encoding="utf-8"))
+                terms = saved["terms"]
+                if saved.get("failed"):
+                    image = Path("pages") / f"{page.number:04d}.png"
+                    render_page(folder / "source.pdf", page.number, folder / image)
+                    failed.append(page.number)
+                    translated.append(TranslatedPage(page.number, [], failed_image=image))
+                else:
+                    translated.append(TranslatedPage(page.number, saved["spanish"]))
                 self._update(job_id, page=len(translated))
-            name = self.get(job_id).name
-            stem = f"{name} (es)"
+            job = self.get(job_id)
+            stem = f"{job.name} (es)"
             results = write_reading_version(translated, folder, stem)
-            delivered = [deliver(result, self._documents_dir, name, f"{stem}{result.suffix}") for result in results]
-            self._update(job_id, state="done", results=[d.name for d in delivered], folder=str(delivered[0].parent))
+            # A retry of the Failed Pages lands beside the first results, numbered: she may have edited those.
+            delivered = [deliver(result, self._documents_dir, job.name, f"{stem}{result.suffix}") for result in results]
+            self._update(
+                job_id,
+                state="done",
+                results=[d.name for d in delivered],
+                folder=str(delivered[0].parent),
+                failed_pages=failed,
+            )
         except _Closing:
             return
         except Exception:
             (folder / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
             self._update(job_id, state="failed")
+            return
+        try:
+            self._open_folder(delivered[0].parent)
+        except OSError:
+            # Her files are written and listed; a file browser that did not open is no reason to fail the Job.
+            (folder / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
 
-    def _translate(self, job_id: str, texts: Sequence[str], terms: Mapping[str, str]) -> TextTranslation:
-        """The page's translation, waiting out a Quota Pause or a lost connection as often as it takes."""
+    def _translate(self, job_id: str, page: SourcePage, terms: dict[str, str]) -> dict:
+        """What a page's `pages/NNNN.json` holds once it is done, Failed Page or not."""
+        if not page.texts:
+            return {"source": [], "spanish": [], "terms": terms}
+        for _ in range(_ATTEMPTS):
+            try:
+                answer = self._ask(job_id, page.texts, terms)
+            except _Closing:
+                raise
+            except Exception:
+                error = traceback.format_exc()
+                continue
+            return {"source": page.texts, "spanish": answer.texts, "terms": answer.terms}
+        return {"source": page.texts, "failed": True, "error": error, "terms": terms}
+
+    def _ask(self, job_id: str, texts: Sequence[str], terms: Mapping[str, str]) -> TextTranslation:
+        """The translator's answer, waiting out a Quota Pause or a lost connection as often as it takes: neither is
+        the page's fault, so neither makes it a Failed Page."""
         while True:
             try:
                 answer = self._translator.translate_texts(texts, terms)
@@ -128,6 +204,14 @@ class JobStore:
         self._sleep(seconds)
         if self._closing.is_set():
             raise _Closing
+
+    def open_folder(self, job_id: str) -> bool:
+        """Shows a finished Job's results folder; False when there is no such folder yet."""
+        job = self.get(job_id)
+        if not job or not job.folder:
+            return False
+        self._open_folder(Path(job.folder))
+        return True
 
     def _update(self, job_id: str, **changes) -> None:
         with self._lock:

@@ -15,7 +15,8 @@ key setup screen.
 
 - Read the app's log in the terminal `dev` runs in. A **Job**'s folder under `jobs/jobs/<id>/` holds
   `job.json`, each page's text and Gemini answer in `pages/`, the Markdown and Typst the results were made from,
-  and `error.txt` when the **Job** failed, so a bad page is diagnosed from what Gemini returned, not from guesses.
+  the last error of each **Failed Page** in its `pages/NNNN.json`, and `error.txt` when the **Job** failed, so a
+  bad page is diagnosed from what Gemini returned, not from guesses.
 - A `429` is quota, not a bug: the **Model Chain** moves on, then a **Quota Pause**. A `503` is Gemini
   overloaded; it retries.
 

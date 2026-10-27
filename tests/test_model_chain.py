@@ -5,6 +5,7 @@ import time
 
 import pymupdf
 import pytest
+from google.genai import errors
 
 from aldi.gemini import BUSY_WAITS, GeminiTranslator
 from aldi.jobs import JobStore
@@ -128,15 +129,15 @@ def test_offline_says_so_and_the_job_continues_when_the_connection_returns(app, 
     assert_every_page_once_in_order(documents_dir, "Pulpa")
 
 
-def test_another_gemini_error_fails_the_job_without_trying_the_other_models(app, gemini, tmp_path):
-    from google.genai import errors
-
-    gemini.fail(FLASH, errors.ClientError(400, {"error": {"code": 400, "status": "INVALID_ARGUMENT"}}))
+def test_another_gemini_error_fails_the_page_without_trying_the_other_models(app, gemini, tmp_path):
+    invalid = errors.ClientError(400, {"error": {"code": 400, "status": "INVALID_ARGUMENT"}})
+    gemini.fail(FLASH, invalid, invalid, invalid)
 
     job = app.wait_for(app.upload(build_born_digital_pdf(tmp_path / "Esmalte.pdf", PAGES))["id"])
 
-    assert job["state"] == "failed"
-    assert gemini.calls == [FLASH]
+    assert job["state"] == "done"
+    assert job["failed_pages"] == [1]
+    assert gemini.calls == [FLASH] * 5
 
 
 def test_closing_the_app_during_a_quota_pause_stops_the_job_where_it_was(tmp_path):
@@ -146,7 +147,7 @@ def test_closing_the_app_during_a_quota_pause_stops_the_job_where_it_was(tmp_pat
         raise QuotaExhausted
 
     translator.translate_texts = out_of_quota
-    store = JobStore(tmp_path / "data", tmp_path / "Documentos", translator)
+    store = JobStore(tmp_path / "data", tmp_path / "Documentos", translator, open_folder=lambda folder: None)
     job = store.start("Esmalte.pdf", build_born_digital_pdf(tmp_path / "Esmalte.pdf", PAGES).read_bytes())
     deadline = time.monotonic() + 10
     while store.get(job.id).state != "paused" and time.monotonic() < deadline:

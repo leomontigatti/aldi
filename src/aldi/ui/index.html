@@ -19,7 +19,8 @@
   .state { color: #555; }
   .done .state { color: #2d7a3a; }
   .failed .state { color: #a33; }
-  .folder { font-size: .85rem; color: #666; word-break: break-all; }
+  .folder { font-size: .85rem; color: #666; word-break: break-all; margin: .3rem 0 .5rem; }
+  button.secondary { background: #fff; color: #2a6f97; padding: .3rem .8rem; }
   header { display: flex; justify-content: space-between; align-items: baseline; }
   button.link { background: none; border: none; color: #2a6f97; padding: 0; text-decoration: underline; }
   #key-screen ol { padding-left: 1.4rem; }
@@ -97,10 +98,33 @@ async function send(pdf) {
   refresh();
 }
 
+async function retry(id) {
+  message.textContent = "";
+  try {
+    const response = await fetch(`/api/jobs/${id}/retry`, { method: "POST" });
+    if (!response.ok) message.textContent = (await response.json()).error;
+  } catch {
+    message.textContent = "No se pudo volver a intentar.";
+  }
+  refresh();
+}
+
+async function openFolder(id) {
+  message.textContent = "";
+  try {
+    const response = await fetch(`/api/jobs/${id}/open-folder`, { method: "POST" });
+    if (!response.ok) message.textContent = (await response.json()).error;
+  } catch {
+    message.textContent = "No se pudo abrir la carpeta.";
+  }
+}
+
 function describe(job) {
   if (job.state === "queued") return "En espera";
   if (job.state === "running") return job.pages ? `Traduciendo… Página ${job.page} de ${job.pages}` : "Traduciendo…";
   if (job.state === "paused") return `${job.notice}. Página ${job.page} de ${job.pages}`;
+  if (job.state === "done" && job.failed_pages.length === 1) return "Lista, salvo 1 página que no se pudo traducir";
+  if (job.state === "done" && job.failed_pages.length) return `Lista, salvo ${job.failed_pages.length} páginas que no se pudieron traducir`;
   if (job.state === "done") return "Lista";
   return "Algo salió mal.";
 }
@@ -122,7 +146,20 @@ async function refresh() {
         const folder = document.createElement("div");
         folder.className = "folder";
         folder.textContent = `${job.results.join(" y ")} en ${job.folder}`;
-        item.append(folder);
+        const open = document.createElement("button");
+        open.type = "button";
+        open.className = "secondary";
+        open.textContent = "Abrir carpeta";
+        open.addEventListener("click", () => openFolder(job.id));
+        item.append(folder, open);
+        if (job.failed_pages.length) {
+          const again = document.createElement("button");
+          again.type = "button";
+          again.className = "secondary";
+          again.textContent = "Reintentar páginas fallidas";
+          again.addEventListener("click", () => retry(job.id));
+          item.append(" ", again);
+        }
       }
       return item;
     }));

@@ -13,6 +13,7 @@ from pathlib import Path
 import platformdirs
 
 from aldi.jobs import JobStore
+from aldi.results import open_folder as open_in_file_browser
 from aldi.settings import Settings, default_config_dir
 from aldi.translator import Translator
 
@@ -60,17 +61,20 @@ def create_server(
     settings: Settings,
     make_translator: Callable[[str], Translator],
     check_key: Callable[[str], bool],
+    open_folder: Callable[[Path], None] = open_in_file_browser,
     host: str = "127.0.0.1",
     port: int = 0,
     sleep: Callable[[float], None] | None = None,
 ) -> AldiServer:
     """The server, bound and ready for `serve_forever`; port 0 takes a free one.
 
-    `make_translator` builds the translator for a key; `check_key` asks Gemini whether a key works; `sleep` stands in
-    for the Job store's waits (a Quota Pause, no connection) in tests.
+    `make_translator` builds the translator for a key; `check_key` asks Gemini whether a key works; `sleep` stands
+    in for the Job store's waits (a Quota Pause, no connection) in tests. Jobs left unfinished in `data_dir` by the
+    last run start again, in the order they were dropped.
     """
     translator = _TranslatorForKey(settings, make_translator)
-    return AldiServer((host, port), JobStore(data_dir, documents_dir, translator, sleep), settings, check_key)
+    jobs = JobStore(data_dir, documents_dir, translator, open_folder, sleep)
+    return AldiServer((host, port), jobs, settings, check_key)
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -110,7 +114,12 @@ class _Handler(BaseHTTPRequestHandler):
         self._json(HTTPStatus.OK, self._settings())
 
     def do_POST(self):
-        if urllib.parse.urlsplit(self.path).path != "/api/jobs":
+        path = urllib.parse.urlsplit(self.path).path
+        if path.startswith("/api/jobs/") and path.endswith("/open-folder"):
+            return self._open_folder(path.removeprefix("/api/jobs/").removesuffix("/open-folder"))
+        if path.startswith("/api/jobs/") and path.endswith("/retry"):
+            return self._retry(path.removeprefix("/api/jobs/").removesuffix("/retry"))
+        if path != "/api/jobs":
             return self._json(HTTPStatus.NOT_FOUND, {"error": "No encontrado."})
         if not self.server.settings.key:
             return self._json(HTTPStatus.CONFLICT, {"error": _NO_KEY})
@@ -123,6 +132,23 @@ class _Handler(BaseHTTPRequestHandler):
         filename = urllib.parse.unquote(self.headers.get("X-Filename") or "documento.pdf")
         job = self.server.jobs.start(filename, pdf)
         self._json(HTTPStatus.CREATED, asdict(job))
+
+    def _retry(self, job_id: str):
+        if not self.server.jobs.get(job_id):
+            return self._json(HTTPStatus.NOT_FOUND, {"error": "No encontrado."})
+        job = self.server.jobs.retry(job_id)
+        if not job:
+            return self._json(HTTPStatus.CONFLICT, {"error": "Esta traducción no tiene páginas fallidas."})
+        self._json(HTTPStatus.OK, asdict(job))
+
+    def _open_folder(self, job_id: str):
+        try:
+            opened = self.server.jobs.open_folder(job_id)
+        except OSError:
+            return self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "No se pudo abrir la carpeta."})
+        if not opened:
+            return self._json(HTTPStatus.NOT_FOUND, {"error": "No encontrado."})
+        self._json(HTTPStatus.OK, {})
 
     def _settings(self) -> dict:
         """What the UI may know of the settings: never the key itself."""

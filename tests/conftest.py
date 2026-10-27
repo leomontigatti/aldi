@@ -131,17 +131,31 @@ class FakeKeyCheck:
 
 
 class RunningApp:
-    def __init__(self, base_url: str):
-        self.base_url = base_url
+    def __init__(self, server):
+        self.server = server
+        host, port = server.server_address[:2]
+        self.base_url = f"http://{host}:{port}"
+        self._thread = threading.Thread(target=server.serve_forever, daemon=True)
+        self._thread.start()
+
+    def stop(self) -> None:
+        """Closes the app the way she closes its window: the Job in hand stays on disk for the next start."""
+        self.server.shutdown()
+        self.server.server_close()
+        self._thread.join()
+
+    @property
+    def running(self) -> bool:
+        return self._thread.is_alive()
 
     def get(self, path: str):
         with urllib.request.urlopen(self.base_url + path) as response:
             return json.load(response)
 
-    def send(self, method: str, path: str, body: dict):
+    def send(self, method: str, path: str, body: dict | None = None):
         request = urllib.request.Request(
             self.base_url + path,
-            data=json.dumps(body).encode("utf-8"),
+            data=json.dumps(body).encode("utf-8") if body is not None else b"",
             method=method,
             headers={"Content-Type": "application/json"},
         )
@@ -157,6 +171,16 @@ class RunningApp:
         )
         with urllib.request.urlopen(request) as response:
             return json.load(response)
+
+    def wait_for_page(self, job_id: str, page: int, timeout: float = 60) -> dict:
+        """Waits until `page` pages of the Job are translated."""
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            job = self.get(f"/api/jobs/{job_id}")
+            if job["page"] >= page:
+                return job
+            time.sleep(0.05)
+        raise AssertionError(f"job {job_id} did not reach page {page}: {job}")
 
     def wait_for(self, job_id: str, timeout: float = 60, until: Callable[[dict], bool] | None = None) -> dict:
         """The Job once it is done or failed, or once `until` holds."""
@@ -204,26 +228,44 @@ def translator_keys():
 
 
 @pytest.fixture
-def app(tmp_path, translator, documents_dir, settings, key_check, translator_keys, clock):
-    """The app on a free port; each translator it builds is the fake, whatever the key."""
+def opened():
+    """The folders the app opened in her file browser."""
+    return []
 
-    def make_translator(key):
-        translator_keys.append(key)
-        return translator
 
-    server = create_server(
-        data_dir=tmp_path / "data",
-        documents_dir=documents_dir,
-        settings=settings,
-        make_translator=make_translator,
-        check_key=key_check,
-        host="127.0.0.1",
-        port=0,
-        sleep=clock.sleep,
-    )
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    host, port = server.server_address[:2]
-    yield RunningApp(f"http://{host}:{port}")
-    server.shutdown()
-    server.server_close()
+@pytest.fixture
+def start_app(tmp_path, documents_dir, settings, key_check, translator_keys, opened, clock):
+    """Starts the app on this test's data and Documents folders; each call is a fresh start of the same install.
+
+    Each translator the app builds is the given fake, whatever the key.
+    """
+    running = []
+
+    def start(translator, open_folder=opened.append) -> RunningApp:
+        def make_translator(key):
+            translator_keys.append(key)
+            return translator
+
+        server = create_server(
+            data_dir=tmp_path / "data",
+            documents_dir=documents_dir,
+            settings=settings,
+            make_translator=make_translator,
+            check_key=key_check,
+            open_folder=open_folder,
+            host="127.0.0.1",
+            port=0,
+            sleep=clock.sleep,
+        )
+        running.append(RunningApp(server))
+        return running[-1]
+
+    yield start
+    for app in running:
+        if app.running:
+            app.stop()
+
+
+@pytest.fixture
+def app(start_app, translator):
+    return start_app(translator)

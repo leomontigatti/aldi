@@ -36,3 +36,9 @@ def _text_blocks(page: pymupdf.Page) -> list[str]:
         if kind == 0 and joined:
             texts.append(joined)
     return texts
+
+
+def render_page(path: Path, number: int, image: Path) -> None:
+    """Writes page `number` (from 1) of the PDF at `path` as a PNG image."""
+    with pymupdf.open(path, filetype="pdf") as document:
+        document[number - 1].get_pixmap(dpi=150).save(image)
