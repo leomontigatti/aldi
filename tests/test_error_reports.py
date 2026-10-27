@@ -55,7 +55,7 @@ def test_a_failed_page_files_a_redacted_report_and_tells_her(app, translator, gi
     assert "Output Mode: Reading Version" in body
     assert "Document: born-digital, 3 pages" in body
     assert "Failed pages: 2" in body
-    assert "Gemini model: gemini-" in body
+    assert "Gemini model: none" in body
     assert "aldi/jobs.py" in body
     assert "RuntimeError" in report["title"]
     published = report["title"] + body

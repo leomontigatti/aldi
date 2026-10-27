@@ -27,8 +27,7 @@ from typing import Protocol
 from google.genai import errors as genai_errors
 
 import aldi
-from aldi.gemini import MODEL_CHAIN
-from aldi.translator import Offline, QuotaExhausted
+from aldi.translator import KeyRefused, Offline, QuotaExhausted
 
 SENT = "Algo salió mal. Ya se envió un informe para que lo arreglen."
 QUEUED = "Algo salió mal. El informe se enviará apenas haya conexión."
@@ -81,6 +80,8 @@ class ErrorDetails:
     gemini_error: str
     summary: str
     """The exception's type and the app's function it was raised in, for the issue's title."""
+    gemini_model: str = ""
+    """The model whose request or answer the error is about; empty when it is about none."""
 
 
 @dataclass(frozen=True)
@@ -96,7 +97,7 @@ class Context:
 def is_bug(error: BaseException) -> bool:
     """Whether `error` deserves a report: a Quota Pause, being offline, an invalid key and a 503 do not."""
     for link in _chain(error):
-        if isinstance(link, QuotaExhausted | Offline):
+        if isinstance(link, QuotaExhausted | Offline | KeyRefused):
             return False
         if isinstance(link, genai_errors.APIError):
             if link.code in (401, 403, 503):
@@ -113,8 +114,9 @@ def describe(error: BaseException) -> ErrorDetails:
     """
     lines: list[str] = []
     app_frames: list[str] = []
-    gemini_error = ""
+    gemini_error = gemini_model = ""
     for link in _chain(error):
+        gemini_model = getattr(link, "gemini_model", "") or gemini_model
         if lines:
             lines.append("")
         lines.append("Traceback (most recent call last):")
@@ -130,7 +132,8 @@ def describe(error: BaseException) -> ErrorDetails:
     types = [_type_name(link) for link in _chain(error)]
     fingerprint = hashlib.sha256("\n".join(types + app_frames).encode("utf-8")).hexdigest()[:12]
     raised_in = app_frames[-1].rpartition(":")[2] if app_frames else "unknown"
-    return ErrorDetails("\n".join(lines), fingerprint, gemini_error, f"{types[-1].rpartition('.')[2]} in {raised_in}")
+    summary = f"{types[-1].rpartition('.')[2]} in {raised_in}"
+    return ErrorDetails("\n".join(lines), fingerprint, gemini_error, summary, gemini_model)
 
 
 def token_expiry(header: str | None) -> datetime | None:
@@ -341,7 +344,7 @@ def _body(problem: str, details: ErrorDetails, context: Context | None) -> str:
             f"- Output Mode: {context.output_mode}\n"
             f"- Document: {context.document_kind}, {context.pages} pages\n"
             f"- Failed pages: {failed}\n"
-            f"- Gemini model: {', '.join(MODEL_CHAIN)} (the Model Chain)\n"
+            f"- Gemini model: {details.gemini_model or 'none'}\n"
             f"- Gemini error: {details.gemini_error or 'none'}\n"
         )
     return (

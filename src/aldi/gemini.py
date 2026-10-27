@@ -9,13 +9,17 @@ from google import genai
 from google.genai import errors, types
 from pydantic import BaseModel
 
-from aldi.translator import Offline, PageBatchAnswer, QuotaExhausted, TextTranslation
+from aldi.translator import KeyRefused, Offline, PageBatchAnswer, QuotaExhausted, Term, TextTranslation
 
 # Each model has its own free quota on the same key (ADR 1); a Job moves down when one runs out.
 # gemma-4-31b-it answered 500 to every request on 2026-10-27; the 26b one works (docs/research/gemini-spike-2026-10.md).
 MODEL_CHAIN = ("gemini-3.5-flash", "gemini-3.5-flash-lite", "gemma-4-26b-a4b-it")
-# Seconds to wait before asking a busy (503) model again; after the last, the request goes to the next model.
+# Seconds to wait before asking a busy model again; after the last, the request goes to the next model.
 BUSY_WAITS = (10, 30, 90)
+# Gemini's answers that mean busy rather than wrong: overloaded, an internal error, its own deadline.
+_BUSY_CODES = (500, 503, 504)
+# A request that takes longer is cut and waited out like a busy model: a Gemma request once hung 15 minutes.
+REQUEST_TIMEOUT = 5 * 60
 # Seconds a model that answered 429 is skipped when the answer gives no `retryDelay`: a minute's quota is back by then.
 QUOTA_RETRY = 60
 # Mantener el diseño keeps to flash (ADR 3): the free tier's 5 requests a minute run out within each minute, so a
@@ -70,18 +74,18 @@ Answer with one JSON object: {"pages": [{"page": N, "blocks": [{"kind": "...", "
 "box_2d": [ymin, xmin, ymax, xmax]}]}], "terms": [{"original": "...", "spanish": "..."}]}."""
 
 
-class _Term(BaseModel):
-    original: str
-    spanish: str
-
-
 class _TextAnswer(BaseModel):
     spanish: list[str]
-    terms: list[_Term]
+    terms: list[Term]
 
 
 class TranslationError(RuntimeError):
     """Gemini answered, but not with a usable translation."""
+
+
+def make_client(api_key: str) -> genai.Client:
+    """Gemini's client for her key, its requests cut after `REQUEST_TIMEOUT`."""
+    return genai.Client(api_key=api_key, http_options=types.HttpOptions(timeout=REQUEST_TIMEOUT * 1000))
 
 
 class GeminiTranslator:
@@ -102,13 +106,14 @@ class GeminiTranslator:
 
     def translate_texts(self, texts: Sequence[str], terms: Mapping[str, str]) -> TextTranslation:
         request = json.dumps({"blocks": list(texts), "terms": dict(terms)}, ensure_ascii=False)
-        response = self._generate(request, _TEXT_INSTRUCTION, _TextAnswer, _TEXT_SHAPE)
+        model, response = self._generate(request, _TEXT_INSTRUCTION, _TextAnswer, _TEXT_SHAPE)
         try:
             answer = _TextAnswer.model_validate_json(response.text or "")
         except ValueError:
             answer = None
         if answer is None or len(answer.spanish) != len(texts):
-            raise TranslationError(f"expected {len(texts)} blocks, got: {response.text!r:.500}")
+            error = TranslationError(f"expected {len(texts)} blocks, got: {response.text!r:.500}")
+            raise _from_model(error, model)
         return TextTranslation(
             texts=answer.spanish, terms={**terms, **{term.original: term.spanish for term in answer.terms}}
         )
@@ -121,20 +126,20 @@ class GeminiTranslator:
                 types.Part.from_bytes(data=image, mime_type="image/png"),
             ]
         contents.append(types.Part.from_text(text=json.dumps({"terms": dict(terms)}, ensure_ascii=False)))
-        return self._generate(contents, _BATCH_INSTRUCTION, PageBatchAnswer, _BATCH_SHAPE).text or ""
+        return self._generate(contents, _BATCH_INSTRUCTION, PageBatchAnswer, _BATCH_SHAPE)[1].text or ""
 
     def answer_layout_prompt(self, prompt: str) -> str:
         model = self._chain[0]
         for _ in range(LAYOUT_QUOTA_WAITS):
             try:
-                return self._generate(prompt, chain=(model,)).text or ""
+                return self._generate(prompt, chain=(model,))[1].text or ""
             except QuotaExhausted:
                 wait = self._out_of_quota_until.get(model, 0) - self._clock()
                 if wait <= 0:
                     # Busy after every wait, not out of quota.
                     raise
                 self._sleep(wait)
-        return self._generate(prompt, chain=(model,)).text or ""
+        return self._generate(prompt, chain=(model,))[1].text or ""
 
     def _generate(
         self,
@@ -143,9 +148,9 @@ class GeminiTranslator:
         schema: type[BaseModel] | None = None,
         shape: str = "",
         chain: Sequence[str] | None = None,
-    ) -> types.GenerateContentResponse:
-        """Gemini's answer from the first model of `chain`, the Model Chain by default, that takes the request; a
-        JSON one matching `schema` when there is one."""
+    ) -> tuple[str, types.GenerateContentResponse]:
+        """Gemini's answer from the first model of `chain`, the Model Chain by default, that takes the request, and
+        that model; a JSON answer matching `schema` when there is one."""
         for model in chain or self._chain:
             gemma = model.startswith("gemma")
             config = types.GenerateContentConfig(
@@ -156,21 +161,47 @@ class GeminiTranslator:
             )
             if self._clock() < self._out_of_quota_until.get(model, 0):
                 continue
-            for wait in (*BUSY_WAITS, None):
-                try:
-                    return self._client.models.generate_content(model=model, contents=contents, config=config)
-                except errors.APIError as error:
-                    if error.code == 503 and wait is not None:
-                        self._sleep(wait)
-                        continue
-                    if error.code == 429:
-                        self._out_of_quota_until[model] = self._clock() + _retry_delay(error)
-                    elif error.code != 503:
-                        raise
-                    break
-                except (httpx.ConnectError, httpx.ConnectTimeout) as error:
-                    raise Offline from error
+            response = self._ask(model, contents, config)
+            if response is not None:
+                return model, response
         raise QuotaExhausted
+
+    def _ask(
+        self, model: str, contents: str | list[types.Part], config: types.GenerateContentConfig
+    ) -> types.GenerateContentResponse | None:
+        """The model's answer, asked again after each of `BUSY_WAITS` while it is busy; None when it stays busy or
+        is out of quota."""
+        for wait in (*BUSY_WAITS, None):
+            try:
+                return self._client.models.generate_content(model=model, contents=contents, config=config)
+            except httpx.ConnectError as error:
+                raise Offline from error
+            except (httpx.TimeoutException, httpx.ReadError, httpx.RemoteProtocolError):
+                # Cut off or kept waiting: Gemini is busy, not out of reach.
+                pass
+            except errors.APIError as error:
+                if error.code == 429:
+                    self._out_of_quota_until[model] = self._clock() + _retry_delay(error)
+                    return None
+                if _key_refused(error):
+                    raise KeyRefused from error
+                if error.code not in _BUSY_CODES:
+                    error.gemini_model = model
+                    raise
+            if wait is not None:
+                self._sleep(wait)
+        return None
+
+
+def _from_model(error: Exception, model: str) -> Exception:
+    """`error`, carrying the model whose answer it is about for its Error Report."""
+    error.gemini_model = model
+    return error
+
+
+def _key_refused(error: errors.APIError) -> bool:
+    invalid = error.code == 400 and "API_KEY_INVALID" in json.dumps(error.details, default=str)
+    return invalid or error.code in (401, 403)
 
 
 def _retry_delay(error: errors.APIError) -> float:

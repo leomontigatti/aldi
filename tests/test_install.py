@@ -114,8 +114,8 @@ def test_creating_the_macos_launcher_again_replaces_it(tmp_path):
     [app] = create_launcher(tmp_path / "new" / "python", tmp_path / "data", "Darwin", [applications])
 
     script = (app / "Contents" / "MacOS" / "Aldi").read_text(encoding="utf-8")
-    assert "new" in script
-    assert "old" not in script
+    assert str(tmp_path / "new" / "python") in script
+    assert str(tmp_path / "old" / "python") not in script
 
 
 @pytest.mark.skipif(sys.platform != "win32", reason="Windows shortcuts are made through Windows' own shell")

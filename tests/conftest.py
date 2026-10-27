@@ -4,6 +4,7 @@ and the app running on a free port."""
 import json
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
@@ -22,6 +23,22 @@ from aldi.translator import TextTranslation
 
 VALID_KEY = "AIza-valida-1"
 REPORT_TOKEN = "github_pat_11AAprueba"
+
+
+class AppClosed(BaseException):
+    """The app's process ending in the middle of a request: nothing after it runs, not even an `except Exception`."""
+
+
+def pdf_text(path: Path) -> str:
+    """A PDF's text, its whitespace collapsed."""
+    return " ".join("".join(page.get_text() for page in pymupdf.open(path)).split())
+
+
+def refused(call) -> tuple[int, str]:
+    """The status and Spanish error of a request the app refuses."""
+    with pytest.raises(urllib.error.HTTPError) as error:
+        call()
+    return error.value.code, json.load(error.value)["error"]
 
 
 def wait_until(condition, timeout=10):
@@ -180,8 +197,19 @@ def quota_error(retry_delay: str | None = None) -> errors.APIError:
     return errors.ClientError(429, {"error": error})
 
 
-def busy_error() -> errors.APIError:
-    return errors.ServerError(503, {"error": {"code": 503, "status": "UNAVAILABLE", "message": "Overloaded"}})
+def busy_error(code: int = 503) -> errors.APIError:
+    """A 503 as Gemini sends it when the model is overloaded, or the `500` or `504` given."""
+    status = {500: "INTERNAL", 503: "UNAVAILABLE", 504: "DEADLINE_EXCEEDED"}[code]
+    return errors.ServerError(code, {"error": {"code": code, "status": status, "message": "Overloaded"}})
+
+
+def key_error(code: int = 401) -> errors.APIError:
+    """Gemini refusing the key, as when she deleted it in AI Studio: a `401`, a `403` or a `400 API_KEY_INVALID`."""
+    if code == 400:
+        details = {"code": 400, "status": "INVALID_ARGUMENT", "details": [{"reason": "API_KEY_INVALID"}]}
+        return errors.ClientError(400, {"error": details})
+    status = {401: "UNAUTHENTICATED", 403: "PERMISSION_DENIED"}[code]
+    return errors.ClientError(code, {"error": {"code": code, "status": status}})
 
 
 def offline_error() -> httpx.ConnectError:
@@ -486,16 +514,18 @@ def start_app(tmp_path, documents_dir, settings, key_check, translator_keys, ope
     """
     running = []
 
-    def start(translator, open_folder=opened.append) -> RunningApp:
-        def make_translator(key):
+    def start(translator=None, open_folder=opened.append, make_translator=None) -> RunningApp:
+        """`make_translator(wait)` builds the translator instead, given the wait closing the app ends."""
+
+        def translator_for_key(key, wait):
             translator_keys.append(key)
-            return translator
+            return make_translator(wait) if make_translator else translator
 
         server = create_server(
             data_dir=tmp_path / "data",
             documents_dir=documents_dir,
             settings=settings,
-            make_translator=make_translator,
+            make_translator=translator_for_key,
             check_key=key_check,
             open_folder=open_folder,
             make_github=github,

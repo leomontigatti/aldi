@@ -12,14 +12,11 @@ from conftest import (
     build_born_digital_pdf,
     build_mixed_pdf,
     build_scanned_pdf,
+    pdf_text,
 )
 
 BLUE = (0x1E, 0x40, 0xA0)
 FIGURE = (100, 300, 600, 600)
-
-
-def pdf_text(path):
-    return " ".join("".join(page.get_text() for page in pymupdf.open(path)).split())
 
 
 def pdf_images(path):

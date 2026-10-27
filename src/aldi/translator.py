@@ -76,3 +76,7 @@ class QuotaExhausted(Exception):
 
 class Offline(Exception):
     """Gemini cannot be reached: no internet connection."""
+
+
+class KeyRefused(Exception):
+    """Gemini refuses the key, as when she deleted it in AI Studio: nothing works until she saves a new one."""

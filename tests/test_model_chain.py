@@ -3,23 +3,27 @@
 import threading
 import time
 
+import httpx
 import pymupdf
 import pytest
 from google.genai import errors
 
-from aldi.gemini import BUSY_WAITS, MODEL_CHAIN, GeminiTranslator
+from aldi.gemini import MODEL_CHAIN, GeminiTranslator
 from aldi.jobs import JobStore
 from aldi.reports import Reporter
 from aldi.translator import QuotaExhausted
 from conftest import (
+    VALID_KEY,
     FakeGemini,
     FakeGitHub,
     FakeTranslator,
     build_born_digital_pdf,
     build_scanned_pdf,
     busy_error,
+    key_error,
     offline_error,
     quota_error,
+    wait_until,
 )
 
 FLASH, LITE, GEMMA = MODEL_CHAIN
@@ -90,19 +94,39 @@ def test_a_busy_model_is_asked_again_only_after_waiting_longer_each_time(app, ge
 
     assert job["state"] == "done"
     assert gemini.calls == [FLASH] * 5
-    assert clock.waits == list(BUSY_WAITS[:2])
-    assert clock.waits[0] >= 10 and clock.waits[1] > clock.waits[0]
+    assert clock.waits == [10, 30]
     assert_every_page_once_in_order(documents_dir, "Esmalte")
 
 
-def test_a_model_that_stays_busy_passes_the_page_to_the_next_and_keeps_its_place(app, gemini, clock, tmp_path):
-    gemini.fail(FLASH, *[busy_error() for _ in range(len(BUSY_WAITS) + 1)])
+@pytest.mark.parametrize(
+    "failures",
+    [
+        [busy_error(500), busy_error(504)],
+        [httpx.ReadTimeout("timed out"), httpx.ConnectTimeout("timed out")],
+        [httpx.ReadError("connection reset"), httpx.RemoteProtocolError("peer closed connection")],
+    ],
+    ids=["500 and 504", "timeouts", "dropped connection"],
+)
+def test_a_server_error_or_a_cut_request_is_waited_out_like_a_busy_model(app, gemini, clock, tmp_path, failures):
+    gemini.fail(FLASH, *failures)
 
     job = app.wait_for(app.upload(build_born_digital_pdf(tmp_path / "Esmalte.pdf", PAGES))["id"])
 
     assert job["state"] == "done"
-    assert gemini.calls == [FLASH] * (len(BUSY_WAITS) + 1) + [LITE, FLASH, FLASH]
-    assert clock.waits == list(BUSY_WAITS)
+    assert job["failed_pages"] == []
+    assert job["notice"] == ""
+    assert gemini.calls == [FLASH] * 5
+    assert clock.waits == [10, 30]
+
+
+def test_a_model_that_stays_busy_passes_the_page_to_the_next_and_keeps_its_place(app, gemini, clock, tmp_path):
+    gemini.fail(FLASH, *[busy_error() for _ in range(4)])
+
+    job = app.wait_for(app.upload(build_born_digital_pdf(tmp_path / "Esmalte.pdf", PAGES))["id"])
+
+    assert job["state"] == "done"
+    assert gemini.calls == [FLASH] * 4 + [LITE, FLASH, FLASH]
+    assert clock.waits == [10, 30, 90]
 
 
 def test_quota_out_on_every_model_pauses_the_job_and_it_resumes_where_it_stopped(
@@ -212,3 +236,54 @@ def test_closing_the_app_during_a_quota_pause_stops_the_job_where_it_was(tmp_pat
     reporter.close()
     assert store.get(job.id).state == "paused"
     assert not (tmp_path / "data" / "jobs" / job.id / "error.txt").exists()
+
+
+@pytest.mark.parametrize("code", [401, 403, 400])
+def test_a_key_refused_mid_job_pauses_it_until_she_saves_a_new_key(
+    app, gemini, translator_keys, documents_dir, tmp_path, code
+):
+    gemini.fail(FLASH, key_error(code), after=1)
+
+    job_id = app.upload(build_born_digital_pdf(tmp_path / "Esmalte.pdf", PAGES))["id"]
+    paused = app.wait_for(job_id, until=lambda job: job["state"] == "paused")
+
+    assert paused["notice"] == "Tu clave de Gemini dejó de funcionar. Revisa la clave en Ajustes."
+    assert paused["page"] == 1
+    time.sleep(0.3)
+    assert gemini.calls == [FLASH, FLASH]
+    app.send("PUT", "/api/settings", {"key": "AIza-valida-2"})
+    job = app.wait_for(job_id)
+    assert job["state"] == "done"
+    assert job["notice"] == ""
+    assert job["failed_pages"] == []
+    assert translator_keys == [VALID_KEY, "AIza-valida-2"]
+    assert_every_page_once_in_order(documents_dir, "Esmalte")
+
+
+def test_an_error_report_names_the_model_that_failed_not_the_whole_chain(app, gemini, github, tmp_path):
+    invalid = errors.ClientError(400, {"error": {"code": 400, "status": "INVALID_ARGUMENT"}})
+    gemini.fail(FLASH, quota_error())
+    gemini.fail(LITE, invalid, invalid, invalid)
+
+    job = app.wait_for(app.upload(build_born_digital_pdf(tmp_path / "Esmalte.pdf", PAGES[:1]))["id"])
+
+    assert job["failed_pages"] == [1]
+    [report] = github.reports()
+    assert "- Gemini model: gemini-3.5-flash-lite\n" in report["body"]
+    assert "- Gemini error: 400 INVALID_ARGUMENT\n" in report["body"]
+
+
+def test_closing_the_app_ends_a_busy_models_wait_at_once(start_app, gemini, documents_dir, tmp_path):
+    gemini.fail(FLASH, *[busy_error() for _ in range(4)])
+    app = start_app(make_translator=lambda wait: GeminiTranslator(gemini, sleep=wait))
+    job_id = app.upload(build_born_digital_pdf(tmp_path / "Esmalte.pdf", PAGES))["id"]
+    wait_until(lambda: gemini.calls)
+
+    started = time.monotonic()
+    app.stop()
+
+    assert time.monotonic() - started < 5
+    assert gemini.calls == [FLASH]
+    job = start_app(FakeTranslator()).wait_for(job_id)
+    assert job["state"] == "done"
+    assert_every_page_once_in_order(documents_dir, "Esmalte")

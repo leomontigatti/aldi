@@ -15,7 +15,7 @@ from pathlib import Path
 import platformdirs
 
 from aldi.estimate import estimate
-from aldi.jobs import JobStore, LayoutNotOffered, SourceDocument
+from aldi.jobs import JobStore, LayoutNotOffered, SourceDocument, closing_wait
 from aldi.page_range import PageRangeError
 from aldi.reports import GitHub, Reporter
 from aldi.results import open_folder as open_in_file_browser
@@ -82,7 +82,7 @@ def create_server(
     data_dir: Path,
     documents_dir: Path,
     settings: Settings,
-    make_translator: Callable[[str], Translator],
+    make_translator: Callable[[str, Callable[[float], None]], Translator],
     check_key: Callable[[str], bool],
     make_github: Callable[[str], GitHub],
     open_folder: Callable[[Path], None] = open_in_file_browser,
@@ -96,14 +96,16 @@ def create_server(
 ) -> AldiServer:
     """The server, bound and ready for `serve_forever`; port 0 takes a free one.
 
-    `make_translator` builds the translator for a key; `check_key` asks Gemini whether a key works; `make_github`
+    `make_translator` builds the translator for a key, given the wait it waits with between retries, which closing
+    the app ends at once; `check_key` asks Gemini whether a key works; `make_github`
     builds the client Error Reports are filed with, for the reporting token; `sleep` stands in for the Job store's
     waits (a Quota Pause, no connection) in tests. `latest_release` asks GitHub for the latest Release's tag and
     `reinstaller` installs it; without them, as in development, no update is offered. Jobs left unfinished in
     `data_dir` by the last run start again, in the order they were dropped; queued Error Reports are sent every
     `report_interval` seconds.
     """
-    translator = _TranslatorForKey(settings, make_translator)
+    closing = threading.Event()
+    translator = _TranslatorForKey(settings, lambda key: make_translator(key, closing_wait(closing)))
     reporter = Reporter(
         data_dir,
         lambda: settings.report_token,
@@ -111,7 +113,7 @@ def create_server(
         secrets=lambda: [settings.key, settings.report_token],
         interval=report_interval,
     )
-    jobs = JobStore(data_dir, documents_dir, translator, open_folder, reporter, sleep)
+    jobs = JobStore(data_dir, documents_dir, translator, open_folder, reporter, sleep, closing)
     updates = Updates(data_dir, version or installed_version(), latest_release, reinstaller, reporter)
     return AldiServer((host, port), jobs, reporter, settings, check_key, updates)
 
@@ -155,6 +157,7 @@ class _Handler(BaseHTTPRequestHandler):
         if not valid:
             return self._json(HTTPStatus.BAD_REQUEST, {"error": _INVALID_KEY})
         self.server.settings.save_key(key)
+        self.server.jobs.key_saved()
         self._json(HTTPStatus.OK, self._settings())
 
     def do_POST(self):
@@ -277,9 +280,7 @@ def main(argv: list[str] | None = None, open_window: Callable[[str], None] | Non
 
         sys.exit(setup())
 
-    from google import genai
-
-    from aldi.gemini import GeminiTranslator, validate_key
+    from aldi.gemini import GeminiTranslator, make_client, validate_key
     from aldi.reports import GitHubClient
     from aldi.update import UvReinstaller, installed_from_release, latest_release
 
@@ -292,8 +293,8 @@ def main(argv: list[str] | None = None, open_window: Callable[[str], None] | Non
     args = parser.parse_args(argv)
     settings = Settings(args.config_dir, dev_env_file=Path(".env"))
 
-    def make_translator(key: str) -> GeminiTranslator:
-        return GeminiTranslator(genai.Client(api_key=key))
+    def make_translator(key: str, wait: Callable[[float], None]) -> GeminiTranslator:
+        return GeminiTranslator(make_client(key), sleep=wait)
 
     release = installed_from_release()
     server = create_server(

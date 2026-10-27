@@ -4,6 +4,7 @@ BabelDOC runs in this process with a translator of ours in place of `pdf2zh-next
 through `Translator.answer_layout_prompt` like every other Gemini request of the app.
 """
 
+import asyncio
 import hashlib
 import json
 import threading
@@ -13,9 +14,8 @@ from pathlib import Path
 from babeldoc.assets.assets import warmup
 from babeldoc.format.pdf import high_level
 from babeldoc.format.pdf.translation_config import TranslationConfig, WatermarkOutputMode
+from babeldoc.progress_monitor import ProgressMonitor
 from babeldoc.translator.translator import BaseTranslator
-
-from aldi.translator import Offline, QuotaExhausted
 
 
 def fetch_assets() -> None:
@@ -38,8 +38,9 @@ def write_layout_kept(
     """Writes the Spanish of `pages` of `source` over the original pages, and only those pages, in `folder`.
 
     Each of Gemini's answers is kept in `folder` as it arrives, so a run stopped by a Quota Pause, a lost connection
-    or the app closing asks for none of them again. Raises `QuotaExhausted`, `Offline` or `Cancelled` when one
-    stopped it.
+    or the app closing asks for none of them again. Raises what `answer` raised, the first time it raised, rather
+    than write a PDF with paragraphs left in English; raises `Cancelled` when the app closed, even while BabelDOC
+    was still laying the pages out.
     """
     translator = _Translator(_KeptAnswers(folder / "answers.jsonl", answer), closing)
     config = TranslationConfig(
@@ -63,10 +64,26 @@ def write_layout_kept(
         pool_max_workers=1,
         use_rich_pbar=False,
     )
-    result = high_level.translate(config)
+    # BabelDOC's own `translate`, with a monitor whose cancel is the app closing: BabelDOC checks it between pages.
+    stages = high_level.get_translation_stage(config)
+    with ProgressMonitor(stages, finish_callback=lambda **_: None, cancel_event=_ClosingEvent(closing)) as monitor:
+        try:
+            result = high_level.do_translate(monitor, config)
+        except asyncio.CancelledError as cancelled:
+            raise Cancelled from cancelled
     if translator.stopped:
         raise translator.stopped
     return Path(result.mono_pdf_path)
+
+
+class _ClosingEvent:
+    """BabelDOC's cancel event, set when the app closes. BabelDOC sets it itself when it finishes: that is ignored."""
+
+    def __init__(self, closing: Callable[[], bool]):
+        self.is_set = closing
+
+    def set(self) -> None:
+        pass
 
 
 class _KeptAnswers:
@@ -100,8 +117,8 @@ class _KeptAnswers:
 
 
 class _Translator(BaseTranslator):
-    """BabelDOC's translator, answering its prompts through Aldi's. A Quota Pause, a lost connection or the app
-    closing stops every request after it: BabelDOC would otherwise leave those paragraphs in English and carry on."""
+    """BabelDOC's translator, answering its prompts through Aldi's. Any error, the app closing included, stops every
+    request after it: BabelDOC would otherwise leave those paragraphs in English and carry on."""
 
     # BabelDOC's own cache keys on this name; `_KeptAnswers` is the cache that counts.
     name = "aldi"
@@ -122,7 +139,7 @@ class _Translator(BaseTranslator):
             raise self.stopped
         try:
             return self._answer(text)
-        except (QuotaExhausted, Offline) as error:
+        except Exception as error:
             self.stopped = error
             raise
 
