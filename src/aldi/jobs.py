@@ -10,8 +10,10 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 from aldi import reports
+from aldi.blocks import Block, Kind
+from aldi.reading import translate_page
 from aldi.reports import Context, Reporter
-from aldi.results import deliver, document_name, redeliver
+from aldi.results import deliver, document_name
 from aldi.source import SourcePage, read_pages, render_page
 from aldi.translator import Offline, QuotaExhausted, Translator
 from aldi.writer import TranslatedPage, write_reading_version
@@ -86,7 +88,7 @@ class JobStore:
         return self.get(job.id)
 
     def retry(self, job_id: str) -> Job | None:
-        """Translates a finished Job's Failed Pages again and rewrites its results; None when it has none."""
+        """Translates a finished Job's Failed Pages again, delivering new results beside the first; None if none."""
         with self._lock:
             job = self._jobs.get(job_id)
             if not job or job.state != "done" or not job.failed_pages:
@@ -118,7 +120,7 @@ class JobStore:
         source: list[SourcePage] = []
         problem = "Crash while translating"
         try:
-            source = read_pages(folder / "source.pdf")
+            source = read_pages(folder / "source.pdf", folder)
             self._update(job_id, state="running", pages=len(source))
             terms: dict[str, str] = {}
             translated = []
@@ -140,21 +142,15 @@ class JobStore:
                     failure = failure or saved.get("report")
                     translated.append(TranslatedPage(page.number, [], failed_image=image))
                 else:
-                    translated.append(TranslatedPage(page.number, saved["spanish"]))
+                    blocks = [Block.from_dict(block) for block in saved["blocks"]]
+                    translated.append(TranslatedPage(page.number, blocks))
                 self._update(job_id, page=len(translated))
             problem = "Result could not be written"
             job = self.get(job_id)
             stem = f"{job.name} (es)"
             results = write_reading_version(translated, folder, stem)
-            if job.results:
-                # A retry of the Failed Pages rewrites the files this Job delivered before.
-                delivered = [
-                    redeliver(result, Path(job.folder) / old) for result, old in zip(results, job.results, strict=True)
-                ]
-            else:
-                delivered = [
-                    deliver(result, self._documents_dir, job.name, f"{stem}{result.suffix}") for result in results
-                ]
+            # A retry of the Failed Pages lands beside the first results, numbered: she may have edited those.
+            delivered = [deliver(result, self._documents_dir, job.name, f"{stem}{result.suffix}") for result in results]
         except Exception as error:
             (folder / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
             notice = self._report(problem, reports.describe(error), source, []) if reports.is_bug(error) else ""
@@ -177,28 +173,26 @@ class JobStore:
 
     def _translate(self, page: SourcePage, terms: dict[str, str]) -> dict:
         """What a page's `pages/NNNN.json` holds once it is done, Failed Page or not."""
-        if not page.texts:
-            return {"source": [], "spanish": [], "terms": terms}
         for _ in range(_ATTEMPTS):
             try:
-                answer = self._translator.translate_texts(page.texts, terms)
+                spanish, after = translate_page(page, self._translator, terms)
             except (QuotaExhausted, Offline):
                 # Neither is the page's fault: the Job waits and asks again, and the page is not Failed.
                 raise
             except Exception as exception:
                 last = exception
                 continue
-            return {"source": page.texts, "spanish": answer.texts, "terms": answer.terms}
+            return {"blocks": [asdict(block) for block in spanish.blocks], "terms": after}
         error = "".join(traceback.format_exception(last))
         # What its Error Report will say, redacted now; a page that failed on a 503 or a refused key gets none.
         report = asdict(reports.describe(last)) if reports.is_bug(last) else None
-        return {"source": page.texts, "failed": True, "error": error, "report": report, "terms": terms}
+        return {"failed": True, "error": error, "report": report, "terms": terms}
 
     def _report(
         self, problem: str, details: reports.ErrorDetails, source: Sequence[SourcePage], failed: Sequence[int]
     ) -> str:
         """Files an Error Report about this Job; returns what she is told about it."""
-        with_text = sum(1 for page in source if page.texts)
+        with_text = sum(1 for page in source if any(block.kind != Kind.FIGURE for block in page.blocks))
         if not source:
             kind = "unknown"
         elif with_text == len(source):
