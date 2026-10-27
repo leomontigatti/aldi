@@ -63,3 +63,38 @@ jobs:
       - run: uv sync --locked --no-default-groups --group test
       - name: Tests
         run: uv run --locked just test
+
+  # The install line on a runner with no uv, from this checkout instead of a Release (install.ps1, install.sh).
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    env:
+      ALDI_SOURCE: ${{ github.workspace }}
+      ALDI_REPORT_TOKEN: not-a-token
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Windows PowerShell 5.1, as on her laptop, running the script the way `irm | iex` does.
+      - name: Install (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: Get-Content -Raw -Encoding UTF8 install.ps1 | Invoke-Expression
+      - name: Install (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: sh < install.sh
+      - name: The launcher, the token and the app are there
+        shell: bash
+        run: |
+          if [[ $RUNNER_OS == Windows ]]; then
+            test -f "$APPDATA/Microsoft/Windows/Start Menu/Programs/Aldi.lnk"
+            test -f "$LOCALAPPDATA/Aldi/settings.json"
+          else
+            test -x /Applications/Aldi.app/Contents/MacOS/Aldi || test -x "$HOME/Applications/Aldi.app/Contents/MacOS/Aldi"
+            test -f "$HOME/Library/Application Support/Aldi/settings.json"
+          fi
+          "$HOME/.local/bin/aldi" --help

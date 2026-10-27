@@ -14,6 +14,10 @@ Gemini key in `.env` and her sample PDFs in `samples/` only when a real-document
 `uv run just test <path or node id>` each time a slice goes green. After a merge, `uv run just lint` and
 `uv run just test`.
 
+A change to the install line (`install.ps1`, `install.sh`, `aldi setup` in `src/aldi/install.py`): `uv run just
+install-check` runs `install.sh` on this checkout into a throwaway folder, on Linux only. CI's `install` job runs
+both scripts on Windows and macOS; the window itself is checked by hand there ([verification.md](verification.md)).
+
 ## Before committing
 
 `uv run just gate`. It runs every linter, then every test, and prints only failures plus a summary line. Lint

@@ -168,8 +168,11 @@ class Reporter:
         self._thread = threading.Thread(target=self._send_now_and_then, daemon=True, name="aldi-reports")
         self._thread.start()
 
-    def report(self, problem: str, details: ErrorDetails, context: Context) -> bool:
-        """Queues a report and tries to send it; True when it went out, False when it waits in the queue."""
+    def report(self, problem: str, details: ErrorDetails, context: Context | None) -> bool:
+        """Queues a report and tries to send it; True when it went out, False when it waits in the queue.
+
+        `context` is None for a problem outside any Job, such as a failed install.
+        """
         title = f"Error Report: {problem}: {details.summary}"
         body = self._redact(_body(problem, details, context))
         with self._lock:
@@ -330,18 +333,23 @@ class GitHubClient:
             raise GitHubUnavailable(type(error).__name__) from error
 
 
-def _body(problem: str, details: ErrorDetails, context: Context) -> str:
-    failed = ", ".join(str(number) for number in context.failed_pages) or "none"
+def _body(problem: str, details: ErrorDetails, context: Context | None) -> str:
+    job = ""
+    if context:
+        failed = ", ".join(str(number) for number in context.failed_pages) or "none"
+        job = (
+            f"- Output Mode: {context.output_mode}\n"
+            f"- Document: {context.document_kind}, {context.pages} pages\n"
+            f"- Failed pages: {failed}\n"
+            f"- Gemini model: {MODEL}\n"
+            f"- Gemini error: {details.gemini_error or 'none'}\n"
+        )
     return (
         "Filed by the app on its own (ADR 4).\n\n"
         f"- Problem: {problem}\n"
         f"- App version: {_version()}\n"
         f"- System: {_system()}\n"
-        f"- Output Mode: {context.output_mode}\n"
-        f"- Document: {context.document_kind}, {context.pages} pages\n"
-        f"- Failed pages: {failed}\n"
-        f"- Gemini model: {MODEL}\n"
-        f"- Gemini error: {details.gemini_error or 'none'}\n\n"
+        f"{job}\n"
         f"```text\n{details.trace}\n```\n\n"
         f"{_marker(details.fingerprint)}\n"
     )

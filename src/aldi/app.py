@@ -2,6 +2,8 @@
 
 import argparse
 import json
+import sys
+import threading
 import urllib.parse
 from collections.abc import Callable
 from dataclasses import asdict
@@ -180,7 +182,17 @@ class _Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
 
-def main(argv: list[str] | None = None) -> None:
+def main(argv: list[str] | None = None, open_window: Callable[[str], None] | None = None) -> None:
+    """`aldi`: the app in its own window until she closes it; `aldi setup`: the install line's last step.
+
+    `open_window` shows the app's URL and returns when the window is closed; pywebview's by default.
+    """
+    argv = sys.argv[1:] if argv is None else argv
+    if argv[:1] == ["setup"]:
+        from aldi.install import main as setup
+
+        sys.exit(setup())
+
     from aldi.gemini import GeminiTranslator, validate_key
     from aldi.reports import GitHubClient
 
@@ -189,16 +201,35 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--documents-dir", type=Path, default=Path(platformdirs.user_documents_dir()))
     parser.add_argument("--config-dir", type=Path, default=default_config_dir())
     parser.add_argument("--port", type=int, default=0)
+    parser.add_argument("--no-window", action="store_true", help="serve the app until Ctrl-C, without its window")
     args = parser.parse_args(argv)
     settings = Settings(args.config_dir, dev_env_file=Path(".env"))
     server = create_server(
         args.data_dir, args.documents_dir, settings, GeminiTranslator, validate_key, GitHubClient, port=args.port
     )
     host, port = server.server_address[:2]
-    print(f"Aldi: http://{host}:{port}/", flush=True)
+    url = f"http://{host}:{port}/"
+    print(f"Aldi: {url}", flush=True)
+    if args.no_window:
+        try:
+            server.serve_forever()
+        except KeyboardInterrupt:
+            pass
+        finally:
+            server.server_close()
+        return
+    serving = threading.Thread(target=server.serve_forever, daemon=True, name="aldi-server")
+    serving.start()
     try:
-        server.serve_forever()
-    except KeyboardInterrupt:
-        pass
+        (open_window or _native_window)(url)
     finally:
+        server.shutdown()
         server.server_close()
+        serving.join()
+
+
+def _native_window(url: str) -> None:
+    import webview
+
+    webview.create_window("Aldi", url, width=960, height=800, min_size=(560, 480))
+    webview.start()
