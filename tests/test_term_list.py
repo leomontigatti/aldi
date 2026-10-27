@@ -1,13 +1,9 @@
 """The Term List goes with every Page Batch, comes back with the terms it adds, and survives a restart (#10)."""
 
-from conftest import FakeTranslator, build_scanned_pdf
+from conftest import AppClosed, FakeTranslator, build_scanned_pdf
 
 CEJ = {"CEJ": "unión amelocementaria (CEJ, cementoenamel junction)"}
 PULPOTOMY = {"pulpotomy": "pulpotomía"}
-
-
-class AppClosed(BaseException):
-    """The app's process ending in the middle of a request: nothing after it runs, not even an `except Exception`."""
 
 
 def scanned_book(tmp_path, pages):

@@ -20,7 +20,7 @@ The `review-paths` block is the same list as paths, for `review.py tier`. The ar
 does not have yet; when a module lands under another name, update its line in the same PR.
 
 ```review-paths
-full laptop: ^(install\.(ps1|sh)|src/aldi/(install|update|launcher)|scripts/install)
+full laptop: ^(install\.(ps1|sh)|src/aldi/(install|update|reinstall|launcher)|scripts/install)
 full key: ^(\.gitignore|t3\.json|src/aldi/(settings|config|keys?|gemini)\b)
 full report: ^src/aldi/(reports?|reporting|errors?)\b
 full files: ^src/aldi/results\b

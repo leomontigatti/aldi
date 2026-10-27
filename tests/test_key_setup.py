@@ -1,26 +1,18 @@
 """First-run key setup and the settings that change the key later (#14)."""
 
-import json
 import sys
-import urllib.error
 from pathlib import Path
 
 import pytest
 
 from aldi.settings import Settings, default_config_dir
-from conftest import VALID_KEY, build_born_digital_pdf
+from conftest import VALID_KEY, build_born_digital_pdf, refused
 
 
 @pytest.fixture
 def settings(tmp_path):
     """First launch: nothing saved yet."""
     return Settings(tmp_path / "config")
-
-
-def refused(call) -> tuple[int, str]:
-    with pytest.raises(urllib.error.HTTPError) as error:
-        call()
-    return error.value.code, json.load(error.value)["error"]
 
 
 def test_with_no_key_the_app_asks_for_one_and_starts_no_job(app, tmp_path):

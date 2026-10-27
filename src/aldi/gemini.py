@@ -9,7 +9,7 @@ from google import genai
 from google.genai import errors, types
 from pydantic import BaseModel
 
-from aldi.translator import Offline, PageBatchAnswer, QuotaExhausted, TextTranslation
+from aldi.translator import Offline, PageBatchAnswer, QuotaExhausted, Term, TextTranslation
 
 # Each model has its own free quota on the same key (ADR 1); a Job moves down when one runs out.
 # gemma-4-31b-it answered 500 to every request on 2026-10-27; the 26b one works (docs/research/gemini-spike-2026-10.md).
@@ -70,14 +70,9 @@ Answer with one JSON object: {"pages": [{"page": N, "blocks": [{"kind": "...", "
 "box_2d": [ymin, xmin, ymax, xmax]}]}], "terms": [{"original": "...", "spanish": "..."}]}."""
 
 
-class _Term(BaseModel):
-    original: str
-    spanish: str
-
-
 class _TextAnswer(BaseModel):
     spanish: list[str]
-    terms: list[_Term]
+    terms: list[Term]
 
 
 class TranslationError(RuntimeError):

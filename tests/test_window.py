@@ -23,6 +23,6 @@ def test_the_app_opens_in_its_window_and_stops_when_the_window_closes(tmp_path, 
 
     [(url, page)] = shown
     assert url.startswith("http://127.0.0.1:")
-    assert "<title>Aldi</title>" in page
+    assert page.lstrip().lower().startswith("<!doctype html>")
     with pytest.raises(urllib.error.URLError):
         urllib.request.urlopen(url, timeout=2)

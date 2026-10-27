@@ -5,14 +5,9 @@ import threading
 import urllib.error
 from pathlib import Path
 
-import pymupdf
 import pytest
 
-from conftest import FakeTranslator, build_born_digital_pdf
-
-
-class AppClosed(BaseException):
-    """The app's process ending in the middle of a page: nothing after it runs, not even an `except Exception`."""
+from conftest import AppClosed, FakeTranslator, build_born_digital_pdf, pdf_text
 
 
 def closing_on(texts_at_close):
@@ -30,10 +25,6 @@ def closing_on(texts_at_close):
 
     translator.translate_texts = translate_until_closed
     return translator
-
-
-def pdf_text(path):
-    return " ".join("".join(page.get_text() for page in pymupdf.open(path)).split())
 
 
 def test_a_job_resumes_after_a_restart_with_every_page_exactly_once(start_app, documents_dir, tmp_path):

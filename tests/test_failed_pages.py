@@ -8,7 +8,7 @@ import pymupdf
 import pytest
 
 from aldi.translator import QuotaExhausted
-from conftest import build_born_digital_pdf
+from conftest import build_born_digital_pdf, pdf_text
 
 FAILED = "Esta página no se pudo traducir"
 
@@ -26,10 +26,6 @@ def failing(translator, text, times, error=RuntimeError):
 
     translator.translate_texts = translate_or_fail
     return failures
-
-
-def pdf_text(path):
-    return " ".join("".join(page.get_text() for page in pymupdf.open(path)).split())
 
 
 def pdf_images(path):

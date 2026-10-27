@@ -7,7 +7,7 @@ import zipfile
 import pymupdf
 import pytest
 
-from conftest import SCAN_SIZE, build_scanned_pdf
+from conftest import SCAN_SIZE, build_scanned_pdf, pdf_text
 
 GREEN = (0x2E, 0x8B, 0x57)
 BLUE = (0x1E, 0x40, 0xA0)
@@ -18,10 +18,6 @@ REFERENCES = (100, 100, 900, 400)
 def box_2d(x0, y0, x1, y1):
     """A box the way Gemini writes one: ymin, xmin, ymax, xmax."""
     return [y0, x0, y1, x1]
-
-
-def pdf_text(path):
-    return " ".join("".join(page.get_text() for page in pymupdf.open(path)).split())
 
 
 def pdf_images(path):

@@ -7,7 +7,7 @@ import pymupdf
 import pytest
 from google.genai import errors
 
-from aldi.gemini import BUSY_WAITS, MODEL_CHAIN, GeminiTranslator
+from aldi.gemini import MODEL_CHAIN, GeminiTranslator
 from aldi.jobs import JobStore
 from aldi.reports import Reporter
 from aldi.translator import QuotaExhausted
@@ -90,19 +90,18 @@ def test_a_busy_model_is_asked_again_only_after_waiting_longer_each_time(app, ge
 
     assert job["state"] == "done"
     assert gemini.calls == [FLASH] * 5
-    assert clock.waits == list(BUSY_WAITS[:2])
-    assert clock.waits[0] >= 10 and clock.waits[1] > clock.waits[0]
+    assert clock.waits == [10, 30]
     assert_every_page_once_in_order(documents_dir, "Esmalte")
 
 
 def test_a_model_that_stays_busy_passes_the_page_to_the_next_and_keeps_its_place(app, gemini, clock, tmp_path):
-    gemini.fail(FLASH, *[busy_error() for _ in range(len(BUSY_WAITS) + 1)])
+    gemini.fail(FLASH, *[busy_error() for _ in range(4)])
 
     job = app.wait_for(app.upload(build_born_digital_pdf(tmp_path / "Esmalte.pdf", PAGES))["id"])
 
     assert job["state"] == "done"
-    assert gemini.calls == [FLASH] * (len(BUSY_WAITS) + 1) + [LITE, FLASH, FLASH]
-    assert clock.waits == list(BUSY_WAITS)
+    assert gemini.calls == [FLASH] * 4 + [LITE, FLASH, FLASH]
+    assert clock.waits == [10, 30, 90]
 
 
 def test_quota_out_on_every_model_pauses_the_job_and_it_resumes_where_it_stopped(

@@ -1,15 +1,18 @@
 """Mantener el diseño: the Spanish written over the original pages by `pdf2zh-next`, for pages with text (#13)."""
 
-import json
-import urllib.error
-
 import pymupdf
-import pytest
 
 from aldi.estimate import estimate
 from aldi.gemini import MODEL_CHAIN, GeminiTranslator
 from aldi.translator import QuotaExhausted
-from conftest import FakeGemini, build_born_digital_pdf, build_mixed_pdf, build_scanned_pdf, quota_error
+from conftest import (
+    FakeGemini,
+    build_born_digital_pdf,
+    build_mixed_pdf,
+    build_scanned_pdf,
+    quota_error,
+    refused,
+)
 
 FLASH = MODEL_CHAIN[0]
 
@@ -26,12 +29,6 @@ def page_texts(path):
     return [" ".join(page.get_text().replace("\x03", " ").split()) for page in pymupdf.open(path)]
 
 
-def refused(call) -> tuple[int, str]:
-    with pytest.raises(urllib.error.HTTPError) as error:
-        call()
-    return error.value.code, json.load(error.value)["error"]
-
-
 def test_mantener_el_diseno_is_offered_only_when_every_chosen_page_has_text(app, tmp_path):
     text = build_born_digital_pdf(tmp_path / "texto.pdf", [["Page 1"], ["Page 2"]])
     scanned = build_scanned_pdf(tmp_path / "escaneado.pdf", [[]])
@@ -41,7 +38,7 @@ def test_mantener_el_diseno_is_offered_only_when_every_chosen_page_has_text(app,
 
     assert document["layout_estimate"] is None
     chosen = app.get(f"/api/documents/{document['id']}/estimate?pages=1-2")
-    assert chosen["layout_estimate"] == estimate([False, False], layout=True)
+    assert chosen["layout_estimate"] == "Tiempo estimado: un minuto"
     assert app.get(f"/api/documents/{document['id']}/estimate?pages=2-3")["layout_estimate"] is None
     start = {"document": document["id"], "pages": "2-3", "output_mode": "layout"}
     assert refused(lambda: app.send("POST", "/api/jobs", start)) == (400, NOT_OFFERED)

@@ -4,6 +4,7 @@ and the app running on a free port."""
 import json
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable, Mapping, Sequence
@@ -22,6 +23,22 @@ from aldi.translator import TextTranslation
 
 VALID_KEY = "AIza-valida-1"
 REPORT_TOKEN = "github_pat_11AAprueba"
+
+
+class AppClosed(BaseException):
+    """The app's process ending in the middle of a request: nothing after it runs, not even an `except Exception`."""
+
+
+def pdf_text(path: Path) -> str:
+    """A PDF's text, its whitespace collapsed."""
+    return " ".join("".join(page.get_text() for page in pymupdf.open(path)).split())
+
+
+def refused(call) -> tuple[int, str]:
+    """The status and Spanish error of a request the app refuses."""
+    with pytest.raises(urllib.error.HTTPError) as error:
+        call()
+    return error.value.code, json.load(error.value)["error"]
 
 
 def wait_until(condition, timeout=10):
