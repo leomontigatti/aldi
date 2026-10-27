@@ -197,7 +197,8 @@ def test_closing_the_app_during_a_quota_pause_stops_the_job_where_it_was(tmp_pat
     translator.translate_texts = out_of_quota
     reporter = Reporter(tmp_path / "data", token=str, make_github=lambda token: FakeGitHub())
     store = JobStore(tmp_path / "data", tmp_path / "Documentos", translator, lambda folder: None, reporter)
-    job = store.start("Esmalte.pdf", build_born_digital_pdf(tmp_path / "Esmalte.pdf", PAGES).read_bytes())
+    dropped = store.drop("Esmalte.pdf", build_born_digital_pdf(tmp_path / "Esmalte.pdf", PAGES).read_bytes())
+    job = store.start(dropped.id, "")
     deadline = time.monotonic() + 10
     while store.get(job.id).state != "paused" and time.monotonic() < deadline:
         time.sleep(0.02)

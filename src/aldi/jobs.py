@@ -1,6 +1,7 @@
 """The Job store: one folder per Job under the app's data directory, and the worker that runs them."""
 
 import json
+import shutil
 import threading
 import traceback
 import uuid
@@ -12,10 +13,11 @@ from typing import TypeVar
 
 from aldi import reports
 from aldi.blocks import Block
+from aldi.page_range import format_page_range, parse_page_range
 from aldi.reading import PAGE_BATCH, read_page_batch, translate_page
 from aldi.reports import Context, Reporter
 from aldi.results import deliver, document_name
-from aldi.source import SourcePage, read_pages, render_page
+from aldi.source import SourcePage, inspect, read_pages, render_page
 from aldi.translator import Offline, QuotaExhausted, Translator
 from aldi.writer import TranslatedPage, write_reading_version
 
@@ -43,6 +45,9 @@ class Job:
     page: int = 0
     """How many pages are translated so far."""
     pages: int = 0
+    """How many pages it translates: those of its Page Range."""
+    page_range: str = ""
+    """The Page Range, as `parse_page_range` reads it; empty for every page."""
     results: list[str] = field(default_factory=list)
     """The delivered files' names, inside `<Documents>/Aldi/<name>/`."""
     folder: str = ""
@@ -54,6 +59,20 @@ class Job:
     notice: str = ""
     """The Spanish line the UI shows under the Job's state besides the progress, such as why it is paused or an
     Error Report's."""
+
+
+@dataclass(frozen=True)
+class SourceDocument:
+    """A PDF she dropped that waits for her to choose its pages before it becomes a Job."""
+
+    id: str
+    name: str
+    scanned: list[bool]
+    """Whether each page is scanned, in order."""
+
+    def pages(self, page_range: str) -> list[int]:
+        """The page numbers `page_range` names; raises `PageRangeError` with what she is told when it names none."""
+        return parse_page_range(page_range, len(self.scanned))
 
 
 class JobStore:
@@ -73,6 +92,10 @@ class JobStore:
         sleep: Callable[[float], None] | None = None,
     ):
         self._jobs_dir = data_dir / "jobs"
+        # A PDF dropped but never started is not kept past the app's run.
+        self._dropped_dir = data_dir / "dropped"
+        shutil.rmtree(self._dropped_dir, ignore_errors=True)
+        self._dropped: dict[str, SourceDocument] = {}
         self._documents_dir = documents_dir
         self._translator = translator
         self._open_folder = open_folder
@@ -90,14 +113,50 @@ class JobStore:
                 self._update(job.id, state="queued")
                 self._worker.submit(self._run, job.id)
 
-    def start(self, filename: str, pdf: bytes) -> Job:
+    def drop(self, filename: str, pdf: bytes) -> SourceDocument:
+        """Keeps a PDF she dropped until she starts it; raises `NotAPdfError` when it is not one."""
+        document_id = uuid.uuid4().hex[:12]
+        folder = self._dropped_dir / document_id
+        folder.mkdir(parents=True)
+        (folder / "source.pdf").write_bytes(pdf)
+        try:
+            scanned = inspect(folder / "source.pdf")
+        except Exception:
+            shutil.rmtree(folder, ignore_errors=True)
+            raise
+        document = SourceDocument(document_id, document_name(filename), scanned)
         with self._lock:
+            self._dropped[document_id] = document
+        return document
+
+    def dropped(self, document_id: str) -> SourceDocument | None:
+        with self._lock:
+            return self._dropped.get(document_id)
+
+    def start(self, document_id: str, page_range: str) -> Job | None:
+        """Starts the Job of a dropped PDF on its Page Range; None when no such PDF waits.
+
+        Raises `PageRangeError` when the Page Range names none of its pages; the PDF then still waits.
+        """
+        with self._lock:
+            document = self._dropped.get(document_id)
+            if not document:
+                return None
+            pages = document.pages(page_range)
+            del self._dropped[document_id]
             number = max((job.number for job in self._jobs.values()), default=0) + 1
-            job = Job(id=uuid.uuid4().hex[:12], name=document_name(filename), number=number)
+            job = Job(
+                id=document.id,
+                name=document.name,
+                pages=len(pages),
+                page_range=format_page_range(pages, len(document.scanned)),
+                number=number,
+            )
             self._jobs[job.id] = job
         folder = self._folder(job.id)
-        (folder / "pages").mkdir(parents=True)
-        (folder / "source.pdf").write_bytes(pdf)
+        folder.parent.mkdir(parents=True, exist_ok=True)
+        (self._dropped_dir / document.id).rename(folder)
+        (folder / "pages").mkdir()
         self._save(job)
         self._worker.submit(self._run, job.id)
         return self.get(job.id)
@@ -135,7 +194,9 @@ class JobStore:
         source: list[SourcePage] = []
         problem = "Crash while translating"
         try:
-            source = read_pages(folder / "source.pdf", folder)
+            job = self.get(job_id)
+            pages = parse_page_range(job.page_range, len(inspect(folder / "source.pdf")))
+            source = read_pages(folder / "source.pdf", folder, set(pages))
             self._update(job_id, state="running", pages=len(source))
             terms: dict[str, str] = {}
             translated = []

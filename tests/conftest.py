@@ -323,15 +323,21 @@ class RunningApp:
         with urllib.request.urlopen(request) as response:
             return json.load(response)
 
-    def upload(self, pdf: Path, filename: str | None = None):
+    def drop(self, pdf: Path, filename: str | None = None) -> dict:
+        """Drops a PDF on the app: it is inspected, not started, until she chooses its pages."""
         request = urllib.request.Request(
-            self.base_url + "/api/jobs",
+            self.base_url + "/api/documents",
             data=pdf.read_bytes(),
             method="POST",
             headers={"X-Filename": urllib.parse.quote(filename or pdf.name)},
         )
         with urllib.request.urlopen(request) as response:
             return json.load(response)
+
+    def upload(self, pdf: Path, filename: str | None = None, pages: str = "") -> dict:
+        """Drops a PDF and starts its Job on the Page Range `pages`, every page when empty; returns the Job."""
+        document = self.drop(pdf, filename)
+        return self.send("POST", "/api/jobs", {"document": document["id"], "pages": pages})
 
     def wait_for_page(self, job_id: str, page: int, timeout: float = 60) -> dict:
         """Waits until `page` pages of the Job are translated."""

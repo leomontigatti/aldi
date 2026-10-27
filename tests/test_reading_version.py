@@ -1,5 +1,6 @@
 """A Born-digital PDF dropped through the app's API comes back as a Spanish Reading Version (#4)."""
 
+import json
 import re
 import urllib.error
 import zipfile
@@ -88,13 +89,16 @@ def test_markdown_characters_in_the_text_stay_as_written(app, documents_dir, tmp
     assert "ES: # 2. Mix 5*3 g with *care* and [x]_y_ <b>" in " ".join(pdf[0].get_text().split())
 
 
-def test_a_job_whose_source_breaks_ends_as_failed(app, documents_dir, tmp_path):
+def test_a_broken_pdf_is_refused_before_it_starts(app, documents_dir, tmp_path):
     source = tmp_path / "Esmalte.pdf"
     source.write_bytes(b"%PDF-1.7\n" + b"\x00broken" * 50)
 
-    job = app.wait_for(app.upload(source)["id"])
+    with pytest.raises(urllib.error.HTTPError) as refused:
+        app.upload(source)
 
-    assert job["state"] == "failed"
+    assert refused.value.code == 400
+    assert json.load(refused.value)["error"] == "Este archivo no es un PDF."
+    assert app.get("/api/jobs")["jobs"] == []
     assert not (documents_dir / "Aldi" / "Esmalte").exists()
 
 

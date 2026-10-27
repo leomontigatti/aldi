@@ -2,6 +2,7 @@
 
 import re
 from collections import Counter
+from collections.abc import Collection
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 
@@ -41,22 +42,23 @@ _TYPST_IMAGES = {"png", "jpeg", "jpg", "gif"}
 _DPI = 150
 
 
-def read_pages(path: Path, folder: Path) -> list[SourcePage]:
-    """The document's pages; their Figures' images are written to `folder / "figures"`."""
-    try:
-        document = pymupdf.open(path, filetype="pdf")
-    except (pymupdf.FileDataError, RuntimeError) as error:
-        raise NotAPdfError(str(error)) from error
-    with document:
-        if not document.is_pdf:
-            raise NotAPdfError(path.name)
-        scanned = {page.number + 1 for page in document if _is_scanned(page)}
-        pages = [[] if page.number + 1 in scanned else _read_items(page, folder) for page in document]
-    body_size = _body_size(pages)
-    running = _running_texts(pages)
+def inspect(path: Path) -> list[bool]:
+    """Whether each page of the PDF at `path` is scanned, one flag a page in order."""
+    with _open(path) as document:
+        return [_is_scanned(page) for page in document]
+
+
+def read_pages(path: Path, folder: Path, numbers: Collection[int] | None = None) -> list[SourcePage]:
+    """The document's pages, or those `numbers` names; their Figures' images are written to `folder / "figures"`."""
+    with _open(path) as document:
+        chosen = [page for page in document if numbers is None or page.number + 1 in numbers]
+        scanned = {page.number + 1 for page in chosen if _is_scanned(page)}
+        pages = [(page.number + 1, [] if page.number + 1 in scanned else _read_items(page, folder)) for page in chosen]
+    body_size = _body_size([items for _number, items in pages])
+    running = _running_texts([items for _number, items in pages])
     in_references = False
     result = []
-    for number, items in enumerate(pages, start=1):
+    for number, items in pages:
         blocks = []
         for item in items:
             block = _classify(item, body_size, running)
@@ -67,6 +69,17 @@ def read_pages(path: Path, folder: Path) -> list[SourcePage]:
             blocks.append(block)
         result.append(SourcePage(number, captions_under_figures(blocks), scanned=number in scanned))
     return result
+
+
+def _open(path: Path) -> pymupdf.Document:
+    try:
+        document = pymupdf.open(path, filetype="pdf")
+    except (pymupdf.FileDataError, RuntimeError) as error:
+        raise NotAPdfError(str(error)) from error
+    if not document.is_pdf:
+        document.close()
+        raise NotAPdfError(path.name)
+    return document
 
 
 def _is_scanned(page: pymupdf.Page) -> bool:

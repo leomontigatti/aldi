@@ -14,10 +14,13 @@ from pathlib import Path
 
 import platformdirs
 
-from aldi.jobs import JobStore
+from aldi.estimate import estimate
+from aldi.jobs import JobStore, SourceDocument
+from aldi.page_range import PageRangeError
 from aldi.reports import GitHub, Reporter
 from aldi.results import open_folder as open_in_file_browser
 from aldi.settings import Settings, default_config_dir
+from aldi.source import NotAPdfError
 from aldi.translator import Translator
 
 # Her largest book is 52 MB; anything far beyond that is not a document she would drop.
@@ -106,6 +109,8 @@ class _Handler(BaseHTTPRequestHandler):
             return self._json(HTTPStatus.OK, self._settings())
         if path == "/api/jobs":
             return self._json(HTTPStatus.OK, {"jobs": [asdict(job) for job in self.server.jobs.list()]})
+        if path.startswith("/api/documents/") and path.endswith("/estimate"):
+            return self._estimate(path.removeprefix("/api/documents/").removesuffix("/estimate"))
         if path.startswith("/api/jobs/"):
             job = self.server.jobs.get(path.removeprefix("/api/jobs/"))
             if job:
@@ -136,10 +141,12 @@ class _Handler(BaseHTTPRequestHandler):
             return self._open_folder(path.removeprefix("/api/jobs/").removesuffix("/open-folder"))
         if path.startswith("/api/jobs/") and path.endswith("/retry"):
             return self._retry(path.removeprefix("/api/jobs/").removesuffix("/retry"))
-        if path != "/api/jobs":
+        if path not in ("/api/documents", "/api/jobs"):
             return self._json(HTTPStatus.NOT_FOUND, {"error": "No encontrado."})
         if not self.server.settings.key:
             return self._json(HTTPStatus.CONFLICT, {"error": _NO_KEY})
+        if path == "/api/jobs":
+            return self._start()
         length = int(self.headers.get("Content-Length") or 0)
         if not 0 < length <= _MAX_UPLOAD:
             return self._json(HTTPStatus.BAD_REQUEST, {"error": _NOT_A_PDF})
@@ -147,8 +154,39 @@ class _Handler(BaseHTTPRequestHandler):
         if b"%PDF-" not in pdf[:1024]:
             return self._json(HTTPStatus.BAD_REQUEST, {"error": _NOT_A_PDF})
         filename = urllib.parse.unquote(self.headers.get("X-Filename") or "documento.pdf")
-        job = self.server.jobs.start(filename, pdf)
+        try:
+            document = self.server.jobs.drop(filename, pdf)
+        except NotAPdfError:
+            return self._json(HTTPStatus.BAD_REQUEST, {"error": _NOT_A_PDF})
+        body = {"id": document.id, "name": document.name, "pages": len(document.scanned)}
+        self._json(HTTPStatus.CREATED, body | {"estimate": estimate(document.scanned)})
+
+    def _start(self):
+        """Starts the Job of a dropped PDF on the Page Range she typed."""
+        try:
+            body = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))
+            document_id, page_range = str(body["document"]), str(body.get("pages") or "")
+        except (ValueError, TypeError, KeyError):
+            return self._json(HTTPStatus.BAD_REQUEST, {"error": "No encontrado."})
+        try:
+            job = self.server.jobs.start(document_id, page_range)
+        except PageRangeError as error:
+            return self._json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+        if not job:
+            return self._json(HTTPStatus.NOT_FOUND, {"error": "No encontrado."})
         self._json(HTTPStatus.CREATED, asdict(job))
+
+    def _estimate(self, document_id: str):
+        """How long the Page Range in `?pages=` takes, or why it names no pages."""
+        document: SourceDocument | None = self.server.jobs.dropped(document_id)
+        if not document:
+            return self._json(HTTPStatus.NOT_FOUND, {"error": "No encontrado."})
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        try:
+            pages = document.pages(query.get("pages", [""])[0])
+        except PageRangeError as error:
+            return self._json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+        self._json(HTTPStatus.OK, {"pages": len(pages), "estimate": estimate([document.scanned[n - 1] for n in pages])})
 
     def _retry(self, job_id: str):
         if not self.server.jobs.get(job_id):

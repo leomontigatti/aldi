@@ -30,6 +30,11 @@
   #key { flex: 1; min-width: 16rem; font: inherit; padding: .5rem; border: 1px solid #9a9a9a; border-radius: 8px; }
   #key-message { color: #a33; min-height: 1.5em; }
   #key-message.ok { color: #2d7a3a; }
+  #chooser { background: #fff; border-radius: 12px; padding: 1rem 1.2rem; }
+  #chooser label { display: block; margin: .8rem 0 .3rem; }
+  #page-range { width: 100%; box-sizing: border-box; font: inherit; padding: .5rem; border: 1px solid #9a9a9a; border-radius: 8px; }
+  #estimate { color: #555; min-height: 1.5em; }
+  #range-message { color: #a33; min-height: 1.5em; }
   [hidden] { display: none !important; }
 </style>
 </head>
@@ -64,6 +69,18 @@
   <button type="button" id="choose">Elegir archivo</button>
   <input type="file" id="file" accept="application/pdf,.pdf" hidden>
 </div>
+<form id="chooser" hidden>
+  <div class="name" id="chosen-name"></div>
+  <div class="state" id="chosen-pages"></div>
+  <div id="range-field">
+    <label for="page-range">¿Todo el documento o qué páginas?</label>
+    <input id="page-range" autocomplete="off" spellcheck="false" placeholder="Todo el documento, o por ejemplo 130-145 o 3, 7-9">
+  </div>
+  <p id="estimate"></p>
+  <p id="range-message" role="alert"></p>
+  <button type="submit">Traducir</button>
+  <button type="button" class="secondary" id="cancel">Cancelar</button>
+</form>
 <p id="message" role="alert"></p>
 <h2>Traducciones</h2>
 <ul id="jobs"></ul>
@@ -84,20 +101,85 @@ drop.addEventListener("drop", (event) => {
   if (event.dataTransfer.files[0]) send(event.dataTransfer.files[0]);
 });
 
+const chooser = document.getElementById("chooser");
+const pageRange = document.getElementById("page-range");
+const estimateLine = document.getElementById("estimate");
+const rangeMessage = document.getElementById("range-message");
+let dropped = null;
+let estimating = null;
+
 async function send(pdf) {
   message.textContent = "";
   try {
-    const response = await fetch("/api/jobs", {
+    const response = await fetch("/api/documents", {
       method: "POST",
       headers: { "X-Filename": encodeURIComponent(pdf.name) },
       body: pdf,
     });
-    if (!response.ok) message.textContent = (await response.json()).error;
+    if (response.ok) choose(await response.json());
+    else message.textContent = (await response.json()).error;
   } catch {
     message.textContent = "No se pudo enviar el archivo.";
   }
-  refresh();
 }
+
+function choose(document_) {
+  dropped = document_;
+  document.getElementById("chosen-name").textContent = document_.name;
+  document.getElementById("chosen-pages").textContent =
+    document_.pages === 1 ? "Tiene 1 página." : `Tiene ${document_.pages} páginas.`;
+  document.getElementById("range-field").hidden = document_.pages === 1;
+  pageRange.value = "";
+  estimateLine.textContent = document_.estimate;
+  rangeMessage.textContent = "";
+  drop.hidden = true;
+  chooser.hidden = false;
+  if (document_.pages > 1) pageRange.focus();
+}
+
+function closeChooser() {
+  dropped = null;
+  chooser.hidden = true;
+  drop.hidden = false;
+}
+
+pageRange.addEventListener("input", () => {
+  clearTimeout(estimating);
+  estimating = setTimeout(async () => {
+    const asked = pageRange.value;
+    try {
+      const response = await fetch(`/api/documents/${dropped.id}/estimate?pages=${encodeURIComponent(asked)}`);
+      const body = await response.json();
+      if (pageRange.value !== asked) return;
+      estimateLine.textContent = response.ok ? body.estimate : "";
+      rangeMessage.textContent = response.ok ? "" : body.error;
+    } catch {
+      // Starting checks the pages again.
+    }
+  }, 300);
+});
+
+document.getElementById("cancel").addEventListener("click", closeChooser);
+chooser.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  clearTimeout(estimating);
+  try {
+    const response = await fetch("/api/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ document: dropped.id, pages: pageRange.value }),
+    });
+    if (response.ok) closeChooser();
+    else if (response.status === 400) rangeMessage.textContent = (await response.json()).error;
+    else {
+      message.textContent = (await response.json()).error;
+      closeChooser();
+    }
+  } catch {
+    rangeMessage.textContent = "No se pudo empezar la traducción. Inténtalo de nuevo.";
+  }
+  refresh();
+});
 
 async function retry(id) {
   message.textContent = "";
@@ -121,9 +203,11 @@ async function openFolder(id) {
 }
 
 function describe(job) {
+  // The page in hand, not the pages finished: the first one reads "Página 1".
+  const progress = `Página ${Math.min(job.page + 1, job.pages)} de ${job.pages}`;
   if (job.state === "queued") return "En espera";
-  if (job.state === "running") return job.pages ? `Traduciendo… Página ${job.page} de ${job.pages}` : "Traduciendo…";
-  if (job.state === "paused") return `${job.notice}. Página ${job.page} de ${job.pages}`;
+  if (job.state === "running") return job.pages ? `Traduciendo… ${progress}` : "Traduciendo…";
+  if (job.state === "paused") return `${job.notice}. ${progress}`;
   if (job.state === "done" && job.failed_pages.length === 1) return "Lista, salvo 1 página que no se pudo traducir";
   if (job.state === "done" && job.failed_pages.length) return `Lista, salvo ${job.failed_pages.length} páginas que no se pudieron traducir`;
   if (job.state === "done") return "Lista";
@@ -138,7 +222,7 @@ async function refresh() {
       item.className = job.state;
       const name = document.createElement("div");
       name.className = "name";
-      name.textContent = job.name;
+      name.textContent = job.page_range ? `${job.name} (páginas ${job.page_range})` : job.name;
       const state = document.createElement("div");
       state.className = "state";
       // An Error Report's line already starts with "Algo salió mal.", so it replaces that state rather than repeat it.
