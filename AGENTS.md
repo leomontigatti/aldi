@@ -4,9 +4,10 @@ Routes to the repo's conventions; each rule lives in the file a route names. The
 every task; a line in the second applies when its leading word matches the task.
 
 Aldi turns an English or Portuguese PDF into a Spanish one, on the user's own laptop (Windows first, macOS
-too). A **Born-digital PDF** keeps its layout through `pdf2zh-next`; a **Scanned PDF** is read and translated
-by Gemini a few pages per request and rebuilt as a **Reading Version** with its figures. Both run on Gemini's
-free tier only. The terms are in [GLOSSARY.md](GLOSSARY.md); the decisions in `docs/adr/`. The code is a
+too). Every document becomes a **Reading Version** by default: a **Scanned PDF**'s pages are read and translated
+by Gemini a few pages per request, a **Born-digital PDF**'s own text is translated, and both are rebuilt with
+their figures. A **Born-digital PDF** can instead keep its layout through `pdf2zh-next`. Everything runs on
+Gemini's free tier only. The terms are in [GLOSSARY.md](GLOSSARY.md); the decisions in `docs/adr/`. The code is a
 Python package in `src/aldi/`, its tests in `tests/`.
 
 The skills, agent briefs and shared hooks are the shared workflow in `leomontigatti/agent-workflow`, installed at

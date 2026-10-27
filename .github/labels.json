@@ -92,6 +92,13 @@
         "color": "0e8a16",
         "description": "Wayfinder prerequisite task ticket"
       }
+    ],
+    "source": [
+      {
+        "name": "source:app",
+        "color": "c2e0c6",
+        "description": "Opened by the app on her laptop (an Error Report)"
+      }
     ]
   }
 }

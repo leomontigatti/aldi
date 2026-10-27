@@ -30,3 +30,19 @@ all are out it takes a **Quota Pause**.
   study material.
 - No extra keys or accounts to multiply the free quota: the **Model Chain** is the legitimate equivalent.
 - A Claude/Codex subscription cannot serve as a fallback on her laptop.
+
+## Amendment (2026-10-27)
+
+A second spike, on more of the book and both articles, changed four parts of the decision. Measurements are in
+[the spike notes](../research/gemini-spike-2026-10.md).
+
+- **The Model Chain starts with `gemini-3.5-flash`**, then flash-lite, then Gemma. Flash read and translated
+  noticeably better, both in the **Reading Version** and through `pdf2zh-next`; flash-lite stays as the next
+  model when flash's quota runs out.
+- **A Page Batch returns only the Spanish and the Figure boxes, never a transcription of the original.** Gemini
+  blocked a four-page batch that asked for both (finish reason `RECITATION`): it refuses to reproduce
+  copyrighted text verbatim. Asking only for the translation passes.
+- **References are left untranslated.** Every attempt garbled the reference lists, and nobody cites a reference
+  in Spanish.
+- **A Term List goes with every Page Batch**, so a term translated one way on page 12 is translated the same way
+  on page 300.
