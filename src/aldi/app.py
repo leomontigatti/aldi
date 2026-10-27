@@ -71,13 +71,14 @@ def create_server(
     report_interval: float = 300,
     host: str = "127.0.0.1",
     port: int = 0,
+    sleep: Callable[[float], None] | None = None,
 ) -> AldiServer:
     """The server, bound and ready for `serve_forever`; port 0 takes a free one.
 
     `make_translator` builds the translator for a key; `check_key` asks Gemini whether a key works; `make_github`
-    builds the client Error Reports are filed with, for the reporting token. Jobs left unfinished in `data_dir` by
-    the last run start again, in the order they were dropped; queued Error Reports are sent every
-    `report_interval` seconds.
+    builds the client Error Reports are filed with, for the reporting token; `sleep` stands in for the Job store's
+    waits (a Quota Pause, no connection) in tests. Jobs left unfinished in `data_dir` by the last run start again,
+    in the order they were dropped; queued Error Reports are sent every `report_interval` seconds.
     """
     translator = _TranslatorForKey(settings, make_translator)
     reporter = Reporter(
@@ -87,7 +88,7 @@ def create_server(
         secrets=lambda: [settings.key, settings.report_token],
         interval=report_interval,
     )
-    jobs = JobStore(data_dir, documents_dir, translator, open_folder, reporter)
+    jobs = JobStore(data_dir, documents_dir, translator, open_folder, reporter, sleep)
     return AldiServer((host, port), jobs, reporter, settings, check_key)
 
 
@@ -181,6 +182,8 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def main(argv: list[str] | None = None) -> None:
+    from google import genai
+
     from aldi.gemini import GeminiTranslator, validate_key
     from aldi.reports import GitHubClient
 
@@ -191,8 +194,12 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--port", type=int, default=0)
     args = parser.parse_args(argv)
     settings = Settings(args.config_dir, dev_env_file=Path(".env"))
+
+    def make_translator(key: str) -> GeminiTranslator:
+        return GeminiTranslator(genai.Client(api_key=key))
+
     server = create_server(
-        args.data_dir, args.documents_dir, settings, GeminiTranslator, validate_key, GitHubClient, port=args.port
+        args.data_dir, args.documents_dir, settings, make_translator, validate_key, GitHubClient, port=args.port
     )
     host, port = server.server_address[:2]
     print(f"Aldi: http://{host}:{port}/", flush=True)

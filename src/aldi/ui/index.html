@@ -123,6 +123,7 @@ async function openFolder(id) {
 function describe(job) {
   if (job.state === "queued") return "En espera";
   if (job.state === "running") return job.pages ? `Traduciendo… Página ${job.page} de ${job.pages}` : "Traduciendo…";
+  if (job.state === "paused") return `${job.notice}. Página ${job.page} de ${job.pages}`;
   if (job.state === "done" && job.failed_pages.length === 1) return "Lista, salvo 1 página que no se pudo traducir";
   if (job.state === "done" && job.failed_pages.length) return `Lista, salvo ${job.failed_pages.length} páginas que no se pudieron traducir`;
   if (job.state === "done") return "Lista";
