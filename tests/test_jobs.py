@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from aldi.translator import QuotaExhausted
 from conftest import AppClosed, FakeTranslator, build_born_digital_pdf, pdf_text
 
 
@@ -153,3 +154,29 @@ def test_a_long_document_name_keeps_her_results_within_windows_paths(app, docume
         assert path.is_file()
         # Leaves 60 characters for her Documents folder (`C:\Users\<nombre>\OneDrive\Documentos`) under 260.
         assert len(str(path.relative_to(documents_dir))) < 200
+
+
+def test_a_job_closed_during_a_quota_pause_resumes_after_a_restart(start_app, documents_dir, tmp_path):
+    pages = [[f"Page {number} is about the pulp."] for number in range(1, 4)]
+    source = build_born_digital_pdf(tmp_path / "Pulpa.pdf", pages)
+    before = FakeTranslator()
+    translate = before.translate_texts
+
+    def out_of_quota_after_the_first_page(texts, terms):
+        if texts != ["Page 1 is about the pulp."]:
+            raise QuotaExhausted
+        return translate(texts, terms)
+
+    before.translate_texts = out_of_quota_after_the_first_page
+    app = start_app(before)
+    job_id = app.upload(source)["id"]
+    app.wait_for(job_id, until=lambda job: job["state"] == "paused")
+    app.stop()
+
+    after = FakeTranslator()
+    job = start_app(after).wait_for(job_id)
+
+    assert job["state"] == "done"
+    assert after.requests == [["Page 2 is about the pulp."], ["Page 3 is about the pulp."]]
+    text = pdf_text(documents_dir / "Aldi" / "Pulpa" / "Pulpa (es).pdf")
+    assert [text.count(f"ES: Page {number} is about the pulp.") for number in range(1, 4)] == [1, 1, 1]

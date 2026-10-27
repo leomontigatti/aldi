@@ -119,8 +119,9 @@ class JobStore:
         saved = [Job(**json.loads(path.read_text(encoding="utf-8"))) for path in self._jobs_dir.glob("*/job.json")]
         for job in sorted(saved, key=lambda job: job.number):
             self._jobs[job.id] = job
-            if job.state in ("queued", "running"):
-                self._update(job.id, state="queued")
+            # A Job the app closed on while it waited out a Quota Pause, no connection or a refused key goes on too.
+            if job.state in ("queued", "running", "paused"):
+                self._update(job.id, state="queued", notice="")
                 self._worker.submit(self._run, job.id)
 
     def drop(self, filename: str, pdf: bytes) -> SourceDocument:
