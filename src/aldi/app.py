@@ -3,6 +3,7 @@
 import argparse
 import json
 import urllib.parse
+from collections.abc import Callable
 from dataclasses import asdict
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -12,30 +13,66 @@ from pathlib import Path
 import platformdirs
 
 from aldi.jobs import JobStore
+from aldi.results import open_folder as open_in_file_browser
+from aldi.settings import Settings, default_config_dir
 from aldi.translator import Translator
 
 # Her largest book is 52 MB; anything far beyond that is not a document she would drop.
 _MAX_UPLOAD = 500 * 1024 * 1024
 _NOT_A_PDF = "Este archivo no es un PDF."
+_NO_KEY = "Primero guarda tu clave de Gemini."
+_INVALID_KEY = "Esa clave no funciona. Revisa que la copiaste entera, sin espacios, y vuelve a pegarla."
+_KEY_UNCHECKED = "No se pudo comprobar la clave. Revisa tu conexión a internet e inténtalo de nuevo."
 
 
 class AldiServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address, jobs: JobStore):
+    def __init__(self, address, jobs: JobStore, settings: Settings, check_key: Callable[[str], bool]):
         super().__init__(address, _Handler)
         self.jobs = jobs
+        self.settings = settings
+        self.check_key = check_key
 
     def server_close(self):
         super().server_close()
         self.jobs.close()
 
 
+class _TranslatorForKey:
+    """The translator for the key saved now: a key changed in the settings applies from the next request on."""
+
+    def __init__(self, settings: Settings, make_translator: Callable[[str], Translator]):
+        self._settings = settings
+        self._make_translator = make_translator
+        self._key = ""
+        self._translator: Translator | None = None
+
+    def __getattr__(self, name: str):
+        key = self._settings.key
+        if self._translator is None or key != self._key:
+            self._key, self._translator = key, self._make_translator(key)
+        return getattr(self._translator, name)
+
+
 def create_server(
-    data_dir: Path, documents_dir: Path, translator: Translator, host: str = "127.0.0.1", port: int = 0
+    data_dir: Path,
+    documents_dir: Path,
+    settings: Settings,
+    make_translator: Callable[[str], Translator],
+    check_key: Callable[[str], bool],
+    open_folder: Callable[[Path], None] = open_in_file_browser,
+    host: str = "127.0.0.1",
+    port: int = 0,
 ) -> AldiServer:
-    """The server, bound and ready for `serve_forever`; port 0 takes a free one."""
-    return AldiServer((host, port), JobStore(data_dir, documents_dir, translator))
+    """The server, bound and ready for `serve_forever`; port 0 takes a free one.
+
+    `make_translator` builds the translator for a key; `check_key` asks Gemini whether a key works. Jobs left
+    unfinished in `data_dir` by the last run start again, in the order they were dropped.
+    """
+    translator = _TranslatorForKey(settings, make_translator)
+    jobs = JobStore(data_dir, documents_dir, translator, open_folder)
+    return AldiServer((host, port), jobs, settings, check_key)
 
 
 class _Handler(BaseHTTPRequestHandler):
@@ -46,6 +83,8 @@ class _Handler(BaseHTTPRequestHandler):
         if path == "/":
             page = resources.files("aldi").joinpath("ui/index.html").read_bytes()
             return self._send(HTTPStatus.OK, page, "text/html; charset=utf-8")
+        if path == "/api/settings":
+            return self._json(HTTPStatus.OK, self._settings())
         if path == "/api/jobs":
             return self._json(HTTPStatus.OK, {"jobs": [asdict(job) for job in self.server.jobs.list()]})
         if path.startswith("/api/jobs/"):
@@ -54,9 +93,32 @@ class _Handler(BaseHTTPRequestHandler):
                 return self._json(HTTPStatus.OK, asdict(job))
         self._json(HTTPStatus.NOT_FOUND, {"error": "No encontrado."})
 
-    def do_POST(self):
-        if urllib.parse.urlsplit(self.path).path != "/api/jobs":
+    def do_PUT(self):
+        if urllib.parse.urlsplit(self.path).path != "/api/settings":
             return self._json(HTTPStatus.NOT_FOUND, {"error": "No encontrado."})
+        try:
+            key = json.loads(self.rfile.read(int(self.headers.get("Content-Length") or 0)))["key"].strip()
+        except (ValueError, TypeError, KeyError, AttributeError):
+            key = ""
+        if not key:
+            return self._json(HTTPStatus.BAD_REQUEST, {"error": _INVALID_KEY})
+        try:
+            valid = self.server.check_key(key)
+        except Exception:
+            return self._json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": _KEY_UNCHECKED})
+        if not valid:
+            return self._json(HTTPStatus.BAD_REQUEST, {"error": _INVALID_KEY})
+        self.server.settings.save_key(key)
+        self._json(HTTPStatus.OK, self._settings())
+
+    def do_POST(self):
+        path = urllib.parse.urlsplit(self.path).path
+        if path.startswith("/api/jobs/") and path.endswith("/open-folder"):
+            return self._open_folder(path.removeprefix("/api/jobs/").removesuffix("/open-folder"))
+        if path != "/api/jobs":
+            return self._json(HTTPStatus.NOT_FOUND, {"error": "No encontrado."})
+        if not self.server.settings.key:
+            return self._json(HTTPStatus.CONFLICT, {"error": _NO_KEY})
         length = int(self.headers.get("Content-Length") or 0)
         if not 0 < length <= _MAX_UPLOAD:
             return self._json(HTTPStatus.BAD_REQUEST, {"error": _NOT_A_PDF})
@@ -66,6 +128,19 @@ class _Handler(BaseHTTPRequestHandler):
         filename = urllib.parse.unquote(self.headers.get("X-Filename") or "documento.pdf")
         job = self.server.jobs.start(filename, pdf)
         self._json(HTTPStatus.CREATED, asdict(job))
+
+    def _open_folder(self, job_id: str):
+        try:
+            opened = self.server.jobs.open_folder(job_id)
+        except OSError:
+            return self._json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": "No se pudo abrir la carpeta."})
+        if not opened:
+            return self._json(HTTPStatus.NOT_FOUND, {"error": "No encontrado."})
+        self._json(HTTPStatus.OK, {})
+
+    def _settings(self) -> dict:
+        """What the UI may know of the settings: never the key itself."""
+        return {"has_key": bool(self.server.settings.key)}
 
     def _json(self, status: HTTPStatus, body: dict):
         self._send(status, json.dumps(body, ensure_ascii=False).encode("utf-8"), "application/json; charset=utf-8")
@@ -80,14 +155,16 @@ class _Handler(BaseHTTPRequestHandler):
 
 
 def main(argv: list[str] | None = None) -> None:
-    from aldi.gemini import GeminiTranslator, read_key
+    from aldi.gemini import GeminiTranslator, validate_key
 
     parser = argparse.ArgumentParser(prog="aldi")
     parser.add_argument("--data-dir", type=Path, default=Path(platformdirs.user_data_dir("Aldi", appauthor=False)))
     parser.add_argument("--documents-dir", type=Path, default=Path(platformdirs.user_documents_dir()))
+    parser.add_argument("--config-dir", type=Path, default=default_config_dir())
     parser.add_argument("--port", type=int, default=0)
     args = parser.parse_args(argv)
-    server = create_server(args.data_dir, args.documents_dir, GeminiTranslator(read_key()), port=args.port)
+    settings = Settings(args.config_dir, dev_env_file=Path(".env"))
+    server = create_server(args.data_dir, args.documents_dir, settings, GeminiTranslator, validate_key, port=args.port)
     host, port = server.server_address[:2]
     print(f"Aldi: http://{host}:{port}/", flush=True)
     try:

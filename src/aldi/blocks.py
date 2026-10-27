@@ -35,6 +35,12 @@ class Block:
     box: tuple[int, int, int, int] | None = None
     """Where a Figure sits on its original page: x0, y0, x1, y1, normalized 0 to 1000."""
 
+    @classmethod
+    def from_dict(cls, data: dict) -> "Block":
+        """The block `dataclasses.asdict` saved, as read back from JSON."""
+        box = data.get("box")
+        return cls(**{**data, "kind": Kind(data["kind"]), "box": tuple(box) if box else None})
+
 
 _EMPHASIS = re.compile(r"(\\.)|\*")
 

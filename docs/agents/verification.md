@@ -5,9 +5,11 @@ How to prove a change she would see: the app window, a **Job**'s progress, the P
 ## Launch
 
 `uv run just dev` starts the app from this worktree on a free `127.0.0.1` port, without the native window, and
-prints the URL (`Aldi: http://127.0.0.1:<port>/`). It reads the key from `.env` and stops at once without one.
-Everything a **Job** writes goes under this worktree's git-ignored `jobs/`: each **Job**'s folder in `jobs/jobs/`,
-and the results that would land in her Documents folder in `jobs/Documentos/Aldi/<nombre>/`.
+prints the URL (`Aldi: http://127.0.0.1:<port>/`). Everything it writes goes under this worktree's git-ignored
+`jobs/`: each **Job**'s folder in `jobs/jobs/`, the results that would land in her Documents folder in
+`jobs/Documentos/Aldi/<nombre>/`, and the settings that would land in her user config directory in
+`jobs/config/settings.json`. While that file holds no key, it uses the one in `.env`; with neither, it opens on the
+key setup screen.
 
 ## Doctor
 
@@ -49,4 +51,5 @@ Which flow proves which area. Filled in as each area lands.
 | Area | Flow |
 | ---- | ---- |
 | Reading Version of a **Born-digital PDF** | Drop the PDF (or `Elegir archivo`); the list shows `Traduciendo… Página N de M`, then `Lista` with the results' folder. Open the PDF and DOCX there: Spanish text, one column, left-aligned, a `p. N del original` at each original page; the original's images near their text with the Spanish caption under them, its tables as tables, its bold and italics, its references untranslated, no running headers or page numbers (`uv run just test-pdf` builds such an article). |
+| Key setup and settings | With no key in `jobs/config/settings.json` nor in `.env`, the app opens on the setup screen's steps. A wrong key shows `Esa clave no funciona…` under the field; a valid one opens the drop zone. `Ajustes` opens the same form to change it, and `Volver` goes back. |
 | A file that is not a PDF | Drop it; `Este archivo no es un PDF.` appears under the drop zone and no **Job** starts. |

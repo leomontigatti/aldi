@@ -1,7 +1,10 @@
 """Where a Job's results land: `<Documents>/Aldi/<nombre>/`, never over a file already there."""
 
+import os
 import re
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 # Characters Windows forbids in a file name, and control characters.
@@ -37,3 +40,11 @@ def deliver(result: Path, documents_dir: Path, name: str, filename: str) -> Path
         except FileExistsError:
             continue
     raise FileExistsError(folder / filename)
+
+
+def open_folder(folder: Path) -> None:
+    """Shows `folder` in her file browser: Explorer on Windows, Finder on macOS."""
+    if sys.platform == "win32":
+        os.startfile(folder)
+    else:
+        subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(folder)])
