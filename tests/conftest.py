@@ -12,7 +12,10 @@ import pymupdf
 import pytest
 
 from aldi.app import create_server
+from aldi.settings import Settings
 from aldi.translator import TextTranslation
+
+VALID_KEY = "AIza-valida-1"
 
 
 class FakeTranslator:
@@ -40,12 +43,37 @@ def build_born_digital_pdf(path: Path, pages: Sequence[Sequence[str]]) -> Path:
     return path
 
 
+class FakeKeyCheck:
+    """Stands in for the one cheap Gemini call that checks a key: a key starting `AIza-valida` passes."""
+
+    def __init__(self):
+        self.checked: list[str] = []
+        self.error: Exception | None = None
+        """Raised instead of answering, as when Gemini cannot be reached."""
+
+    def __call__(self, key: str) -> bool:
+        self.checked.append(key)
+        if self.error:
+            raise self.error
+        return key.startswith("AIza-valida")
+
+
 class RunningApp:
     def __init__(self, base_url: str):
         self.base_url = base_url
 
     def get(self, path: str):
         with urllib.request.urlopen(self.base_url + path) as response:
+            return json.load(response)
+
+    def send(self, method: str, path: str, body: dict):
+        request = urllib.request.Request(
+            self.base_url + path,
+            data=json.dumps(body).encode("utf-8"),
+            method=method,
+            headers={"Content-Type": "application/json"},
+        )
+        with urllib.request.urlopen(request) as response:
             return json.load(response)
 
     def upload(self, pdf: Path, filename: str | None = None):
@@ -79,9 +107,40 @@ def documents_dir(tmp_path):
 
 
 @pytest.fixture
-def app(tmp_path, translator, documents_dir):
+def settings(tmp_path):
+    """The settings with a key already saved, as on every launch after the first."""
+    settings = Settings(tmp_path / "config")
+    settings.save_key(VALID_KEY)
+    return settings
+
+
+@pytest.fixture
+def key_check():
+    return FakeKeyCheck()
+
+
+@pytest.fixture
+def translator_keys():
+    """The key each translator the app built was given, in order."""
+    return []
+
+
+@pytest.fixture
+def app(tmp_path, translator, documents_dir, settings, key_check, translator_keys):
+    """The app on a free port; each translator it builds is the fake, whatever the key."""
+
+    def make_translator(key):
+        translator_keys.append(key)
+        return translator
+
     server = create_server(
-        data_dir=tmp_path / "data", documents_dir=documents_dir, translator=translator, host="127.0.0.1", port=0
+        data_dir=tmp_path / "data",
+        documents_dir=documents_dir,
+        settings=settings,
+        make_translator=make_translator,
+        check_key=key_check,
+        host="127.0.0.1",
+        port=0,
     )
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
