@@ -114,6 +114,10 @@ class GeminiTranslator:
         if answer is None or len(answer.spanish) != len(texts):
             error = TranslationError(f"expected {len(texts)} blocks, got: {response.text!r:.500}")
             raise _from_model(error, model)
+        # A blank answer for a text with words would drop it from her page without a trace.
+        if any(text.strip() and not spanish.strip() for text, spanish in zip(texts, answer.spanish, strict=True)):
+            error = TranslationError(f"a blank translation of a non-empty block: {response.text!r:.500}")
+            raise _from_model(error, model)
         return TextTranslation(
             texts=answer.spanish, terms={**terms, **{term.original: term.spanish for term in answer.terms}}
         )

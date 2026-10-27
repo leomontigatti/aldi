@@ -158,22 +158,25 @@ def build_mixed_pdf(path: Path, parts: Sequence[Path]) -> Path:
 class FakeGemini:
     """Stands in for google-genai's client: every model answers each block prefixed with `ES:`, each page of a Page
     Batch as one paragraph `ES: Page N`, and `pdf2zh-next`'s prompts as `FakeTranslator` does, unless `fail` scripted
-    an error for that model's next request. A Gemma model answers 500 to a response schema, as Gemma does."""
+    an error, or a text to answer instead, for that model's next request. A Gemma model answers 500 to a response
+    schema, as Gemma does."""
 
     def __init__(self):
         self.models = self
         self.calls: list[str] = []
         """The model each request went to, in order."""
-        self._script: dict[str, list[Exception | None]] = {}
+        self._script: dict[str, list[Exception | str | None]] = {}
 
-    def fail(self, model: str, *failures: Exception, after: int = 0) -> None:
-        """The model's requests after its next `after` answers raise `failures`, one each."""
+    def fail(self, model: str, *failures: Exception | str, after: int = 0) -> None:
+        """The model's requests after its next `after` answers raise `failures`, one each; a text is answered."""
         self._script[model] = [None] * after + list(failures)
 
     def generate_content(self, *, model, contents, config):
         self.calls.append(model)
         script = self._script.get(model)
         if script and (failure := script.pop(0)):
+            if isinstance(failure, str):
+                return SimpleNamespace(text=failure)
             raise failure
         if model.startswith("gemma") and config.response_schema:
             raise errors.ServerError(500, {"error": {"code": 500, "status": "INTERNAL"}})

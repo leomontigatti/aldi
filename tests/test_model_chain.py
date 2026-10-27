@@ -1,5 +1,6 @@
 """Gemini busy, out of quota or out of reach: the Job moves down the Model Chain, pauses and resumes (#7)."""
 
+import json
 import threading
 import time
 
@@ -287,3 +288,24 @@ def test_closing_the_app_ends_a_busy_models_wait_at_once(start_app, gemini, docu
     job = start_app(FakeTranslator()).wait_for(job_id)
     assert job["state"] == "done"
     assert_every_page_once_in_order(documents_dir, "Esmalte")
+
+
+def test_a_blank_translation_of_a_paragraph_is_asked_again_not_delivered_empty(app, gemini, documents_dir, tmp_path):
+    # Bug: `{"spanish": [""]}` passed as a translation, and the page arrived without its paragraph.
+    blank = json.dumps({"spanish": ["  "], "terms": []})
+    gemini.fail(FLASH, blank)
+
+    job = app.wait_for(app.upload(build_born_digital_pdf(tmp_path / "Esmalte.pdf", PAGES))["id"])
+
+    assert job["failed_pages"] == []
+    assert_every_page_once_in_order(documents_dir, "Esmalte")
+
+
+def test_a_page_translated_blank_every_time_becomes_a_failed_page(app, gemini, tmp_path):
+    blank = json.dumps({"spanish": [""], "terms": []})
+    gemini.fail(FLASH, blank, blank, blank)
+
+    job = app.wait_for(app.upload(build_born_digital_pdf(tmp_path / "Esmalte.pdf", PAGES))["id"])
+
+    assert job["state"] == "done"
+    assert job["failed_pages"] == [1]
