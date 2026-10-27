@@ -21,14 +21,33 @@ REPORT_TOKEN = "github_pat_11AAprueba"
 
 
 class FakeTranslator:
-    """Stands in for Gemini at the translator seam: each text comes back prefixed with `ES:`."""
+    """Stands in for Gemini at the translator seam: each text comes back prefixed with `ES:`.
+
+    A page image is read as the blocks `scanned` holds for its page number, or else as one paragraph `ES: Page N`.
+    """
 
     def __init__(self):
         self.requests: list[list[str]] = []
+        self.batches: list[list[int]] = []
+        """The page numbers of each Page Batch asked for, in order."""
+        self.scanned: dict[int, list[dict]] = {}
 
     def translate_texts(self, texts: Sequence[str], terms: Mapping[str, str]) -> TextTranslation:
         self.requests.append(list(texts))
         return TextTranslation(texts=[f"ES: {text}" for text in texts], terms=dict(terms))
+
+    def read_page_batch(self, pages: Sequence[tuple[int, bytes]], terms: Mapping[str, str]) -> str:
+        self.batches.append([number for number, _image in pages])
+        assert all(image.startswith(b"\x89PNG") for _number, image in pages)
+        return json.dumps(
+            {
+                "pages": [{"page": number, "blocks": self.page_blocks(number)} for number, _image in pages],
+                "terms": [{"original": original, "spanish": spanish} for original, spanish in terms.items()],
+            }
+        )
+
+    def page_blocks(self, number: int) -> list[dict]:
+        return self.scanned.get(number, [{"kind": "paragraph", "text": f"ES: Page {number}"}])
 
 
 def build_born_digital_pdf(path: Path, pages: Sequence[Sequence[str]]) -> Path:
@@ -41,6 +60,30 @@ def build_born_digital_pdf(path: Path, pages: Sequence[Sequence[str]]) -> Path:
             box = pymupdf.Rect(72, y, page.rect.width - 72, y + 200)
             page.insert_textbox(box, paragraph, fontsize=11)
             y += 220
+    document.save(path)
+    return path
+
+
+SCAN_SIZE = (620, 877)
+"""A scanned page's image in pixels: an A4 page at 75 dpi."""
+
+
+def build_scanned_pdf(path: Path, pages: Sequence[Sequence[tuple[tuple[int, int, int, int], tuple]]]) -> Path:
+    """A PDF of page photos with no text layer: each page a white image with the given rectangles painted on it.
+
+    A rectangle is its box, x0, y0, x1, y1 normalized 0 to 1000 like a Figure's, and its RGB colour.
+    """
+    document = pymupdf.open()
+    width, height = SCAN_SIZE
+    for rectangles in pages:
+        page = document.new_page()
+        image = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, width, height), False)
+        image.set_rect(image.irect, (255, 255, 255))
+        for (x0, y0, x1, y1), colour in rectangles:
+            # Rounded outwards, so that a crop of exactly the box holds nothing but the colour.
+            box = pymupdf.Rect(x0 * width, y0 * height, x1 * width, y1 * height) / 1000
+            image.set_rect(box.round(), colour)
+        page.insert_image(page.rect, stream=image.tobytes("png"))
     document.save(path)
     return path
 

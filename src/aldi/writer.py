@@ -63,8 +63,9 @@ def to_markdown(pages: Sequence[TranslatedPage]) -> str:
         for index, block in enumerate(blocks):
             previous = blocks[index - 1] if index else None
             following = blocks[index + 1] if index + 1 < len(blocks) else None
-            if block.kind == Kind.FIGURE:
-                caption = following.text if following and following.kind == Kind.CAPTION else ""
+            if block.kind == Kind.FIGURE or block.image:
+                is_figure = block.kind == Kind.FIGURE
+                caption = following.text if is_figure and following and following.kind == Kind.CAPTION else ""
                 paragraphs.append(_figure(block, caption))
             elif block.kind == Kind.CAPTION and previous and previous.kind == Kind.FIGURE:
                 continue
