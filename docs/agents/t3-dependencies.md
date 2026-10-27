@@ -49,11 +49,13 @@ Status of an entry:
 
 ### preview-file-upload
 - **Workaround:** none yet. `docs/agents/verification.md` § Drive drops a PDF into the app with
-  `preview_upload`, which has not been tried against the app's drop zone.
+  `preview_act` (`action: "upload"`, which replaced `preview_upload` in pingdotgg/t3code#25423), not
+  yet tried against the app's drop zone.
 - **Used by:** `docs/agents/verification.md` § Drive.
 - **Would improve if:** the first ticket that adds the app window drives an upload with
-  `preview_upload` and it works; then this entry is resolved, or § Drive names the fallback.
-- **Watch:** `preview_upload`.
+  `preview_act` (`action: "upload"`) and it works; then this entry is resolved, or § Drive names the
+  fallback.
+- **Watch:** `preview_act` (`action: "upload"`), pingdotgg/t3code#25423.
 
 ## Ready
 
