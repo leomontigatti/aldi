@@ -7,7 +7,7 @@ import pymupdf
 import pytest
 from google.genai import errors
 
-from aldi.gemini import BUSY_WAITS, GeminiTranslator
+from aldi.gemini import BUSY_WAITS, MODEL_CHAIN, GeminiTranslator
 from aldi.jobs import JobStore
 from aldi.translator import QuotaExhausted
 from conftest import (
@@ -19,7 +19,7 @@ from conftest import (
     quota_error,
 )
 
-FLASH, LITE, GEMMA = "gemini-3.5-flash", "gemini-3.5-flash-lite", "gemma-4-31b-it"
+FLASH, LITE, GEMMA = MODEL_CHAIN
 PAGES = [["The enamel is hard."], ["The dentin is softer."], ["The pulp is alive."]]
 
 
@@ -31,7 +31,7 @@ def gemini():
 @pytest.fixture
 def translator(gemini, clock):
     """The real translator, with the fake behind it in place of Gemini's client."""
-    return GeminiTranslator(gemini, chain=(FLASH, LITE, GEMMA), sleep=clock.sleep, clock=clock.now)
+    return GeminiTranslator(gemini, sleep=clock.sleep, clock=clock.now)
 
 
 def spanish_text(documents_dir, name):
@@ -66,6 +66,18 @@ def test_a_model_out_of_quota_takes_the_job_back_once_the_429s_retry_delay_is_ov
         translator.translate_texts(["The enamel is hard."], {})
 
     assert gemini.calls == [FLASH, LITE, LITE, FLASH]
+
+
+def test_the_last_model_gemma_translates_when_both_gemini_models_are_out_of_quota(app, gemini, documents_dir, tmp_path):
+    gemini.fail(FLASH, quota_error())
+    gemini.fail(LITE, quota_error())
+
+    job = app.wait_for(app.upload(build_born_digital_pdf(tmp_path / "Esmalte.pdf", PAGES))["id"])
+
+    assert job["state"] == "done"
+    assert job["failed_pages"] == []
+    assert gemini.calls == [FLASH, LITE, GEMMA, GEMMA, GEMMA]
+    assert_every_page_once_in_order(documents_dir, "Esmalte")
 
 
 def test_a_busy_model_is_asked_again_only_after_waiting_longer_each_time(app, gemini, clock, documents_dir, tmp_path):

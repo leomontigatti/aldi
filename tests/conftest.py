@@ -49,7 +49,7 @@ def build_born_digital_pdf(path: Path, pages: Sequence[Sequence[str]]) -> Path:
 
 class FakeGemini:
     """Stands in for google-genai's client: every model answers each block prefixed with `ES:`, unless `fail`
-    scripted an error for that model's next request."""
+    scripted an error for that model's next request. A Gemma model answers 500 to a response schema, as Gemma does."""
 
     def __init__(self):
         self.models = self
@@ -66,9 +66,10 @@ class FakeGemini:
         script = self._script.get(model)
         if script and (failure := script.pop(0)):
             raise failure
+        if model.startswith("gemma") and config.response_schema:
+            raise errors.ServerError(500, {"error": {"code": 500, "status": "INTERNAL"}})
         blocks = json.loads(contents)["blocks"]
-        answer = config.response_schema(spanish=[f"ES: {block}" for block in blocks], terms=[])
-        return SimpleNamespace(parsed=answer, text=answer.model_dump_json())
+        return SimpleNamespace(text=json.dumps({"spanish": [f"ES: {block}" for block in blocks], "terms": []}))
 
 
 def quota_error(retry_delay: str | None = None) -> errors.APIError:
