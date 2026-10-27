@@ -1,4 +1,4 @@
-"""Test support: the fake translator, the builders of test PDFs, and the app running on a free port."""
+"""Test support: the fake translator and GitHub, the builders of test PDFs, and the app running on a free port."""
 
 import json
 import threading
@@ -12,10 +12,12 @@ import pymupdf
 import pytest
 
 from aldi.app import create_server
+from aldi.reports import GitHubUnavailable, Issue
 from aldi.settings import Settings
 from aldi.translator import TextTranslation
 
 VALID_KEY = "AIza-valida-1"
+REPORT_TOKEN = "github_pat_11AAprueba"
 
 
 class FakeTranslator:
@@ -56,6 +58,45 @@ class FakeKeyCheck:
         if self.error:
             raise self.error
         return key.startswith("AIza-valida")
+
+
+class FakeGitHub:
+    """Stands in for GitHub's issues API on this repo; also the factory the app builds its client with."""
+
+    def __init__(self):
+        self.issues: list[dict] = []
+        """Each issue filed: number, title, body, labels, comments and whether it is open."""
+        self.offline = False
+        self.token_expires = None
+        self.tokens: list[str] = []
+
+    def __call__(self, token: str) -> "FakeGitHub":
+        self.tokens.append(token)
+        return self
+
+    def open_reports(self) -> list[Issue]:
+        self._reach()
+        return [Issue(i["number"], i["body"]) for i in self.issues if i["open"] and "source:app" in i["labels"]]
+
+    def open_issue(self, title: str, body: str, labels: list[str]) -> int:
+        self._reach()
+        number = len(self.issues) + 1
+        self.issues.append(
+            {"number": number, "title": title, "body": body, "labels": labels, "comments": [], "open": True}
+        )
+        return number
+
+    def comment(self, number: int, body: str) -> None:
+        self._reach()
+        self.issues[number - 1]["comments"].append(body)
+
+    def reports(self) -> list[dict]:
+        """The Error Reports filed, without the issues that ask to renew the token."""
+        return [issue for issue in self.issues if "bug" in issue["labels"]]
+
+    def _reach(self) -> None:
+        if self.offline:
+            raise GitHubUnavailable("offline")
 
 
 class RunningApp:
@@ -126,15 +167,21 @@ def translator():
 
 
 @pytest.fixture
+def github():
+    return FakeGitHub()
+
+
+@pytest.fixture
 def documents_dir(tmp_path):
     return tmp_path / "Documentos"
 
 
 @pytest.fixture
 def settings(tmp_path):
-    """The settings with a key already saved, as on every launch after the first."""
+    """The settings with a key and the reporting token already saved, as on every launch after the first."""
     settings = Settings(tmp_path / "config")
     settings.save_key(VALID_KEY)
+    settings.save_report_token(REPORT_TOKEN)
     return settings
 
 
@@ -156,7 +203,7 @@ def opened():
 
 
 @pytest.fixture
-def start_app(tmp_path, documents_dir, settings, key_check, translator_keys, opened):
+def start_app(tmp_path, documents_dir, settings, key_check, translator_keys, opened, github):
     """Starts the app on this test's data and Documents folders; each call is a fresh start of the same install.
 
     Each translator the app builds is the given fake, whatever the key.
@@ -175,6 +222,8 @@ def start_app(tmp_path, documents_dir, settings, key_check, translator_keys, ope
             make_translator=make_translator,
             check_key=key_check,
             open_folder=open_folder,
+            make_github=github,
+            report_interval=0.05,
             host="127.0.0.1",
             port=0,
         )

@@ -4,11 +4,13 @@ import json
 import threading
 import traceback
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
+from aldi import reports
+from aldi.reports import Context, Reporter
 from aldi.results import deliver, document_name, redeliver
 from aldi.source import SourcePage, read_pages, render_page
 from aldi.translator import Offline, QuotaExhausted, Translator
@@ -35,6 +37,8 @@ class Job:
     """The Job's place in the order she dropped them, from 1: the queue runs and lists Jobs in this order."""
     failed_pages: list[int] = field(default_factory=list)
     """The Failed Pages of a finished Job, by their number in the original."""
+    notice: str = ""
+    """The Spanish line the UI shows under the Job's state besides the progress, such as an Error Report's."""
 
 
 class JobStore:
@@ -45,12 +49,18 @@ class JobStore:
     """
 
     def __init__(
-        self, data_dir: Path, documents_dir: Path, translator: Translator, open_folder: Callable[[Path], None]
+        self,
+        data_dir: Path,
+        documents_dir: Path,
+        translator: Translator,
+        open_folder: Callable[[Path], None],
+        reporter: Reporter,
     ):
         self._jobs_dir = data_dir / "jobs"
         self._documents_dir = documents_dir
         self._translator = translator
         self._open_folder = open_folder
+        self._reporter = reporter
         self._lock = threading.Lock()
         self._closing = threading.Event()
         self._jobs: dict[str, Job] = {}
@@ -85,7 +95,7 @@ class JobStore:
             job.state = "queued"
         for number in job.failed_pages:
             (self._folder(job_id) / "pages" / f"{number:04d}.json").unlink(missing_ok=True)
-        self._update(job_id, failed_pages=[])
+        self._update(job_id, failed_pages=[], notice="")
         self._worker.submit(self._run, job_id)
         return self.get(job_id)
 
@@ -105,12 +115,15 @@ class JobStore:
 
     def _run(self, job_id: str) -> None:
         folder = self._folder(job_id)
+        source: list[SourcePage] = []
+        problem = "Crash while translating"
         try:
             source = read_pages(folder / "source.pdf")
             self._update(job_id, state="running", pages=len(source))
             terms: dict[str, str] = {}
             translated = []
             failed = []
+            failure = None
             for page in source:
                 done = folder / "pages" / f"{page.number:04d}.json"
                 if not done.exists():
@@ -124,10 +137,12 @@ class JobStore:
                     image = Path("pages") / f"{page.number:04d}.png"
                     render_page(folder / "source.pdf", page.number, folder / image)
                     failed.append(page.number)
+                    failure = failure or saved.get("report")
                     translated.append(TranslatedPage(page.number, [], failed_image=image))
                 else:
                     translated.append(TranslatedPage(page.number, saved["spanish"]))
                 self._update(job_id, page=len(translated))
+            problem = "Result could not be written"
             job = self.get(job_id)
             stem = f"{job.name} (es)"
             results = write_reading_version(translated, folder, stem)
@@ -140,17 +155,20 @@ class JobStore:
                 delivered = [
                     deliver(result, self._documents_dir, job.name, f"{stem}{result.suffix}") for result in results
                 ]
-            self._update(
-                job_id,
-                state="done",
-                results=[d.name for d in delivered],
-                folder=str(delivered[0].parent),
-                failed_pages=failed,
-            )
-        except Exception:
+        except Exception as error:
             (folder / "error.txt").write_text(traceback.format_exc(), encoding="utf-8")
-            self._update(job_id, state="failed")
+            notice = self._report(problem, reports.describe(error), source, []) if reports.is_bug(error) else ""
+            self._update(job_id, state="failed", notice=notice)
             return
+        notice = self._report("Failed Pages", reports.ErrorDetails(**failure), source, failed) if failure else ""
+        self._update(
+            job_id,
+            state="done",
+            results=[d.name for d in delivered],
+            folder=str(delivered[0].parent),
+            failed_pages=failed,
+            notice=notice,
+        )
         try:
             self._open_folder(delivered[0].parent)
         except OSError:
@@ -167,11 +185,28 @@ class JobStore:
             except (QuotaExhausted, Offline):
                 # Neither is the page's fault: the Job waits and asks again, and the page is not Failed.
                 raise
-            except Exception:
-                error = traceback.format_exc()
+            except Exception as exception:
+                last = exception
                 continue
             return {"source": page.texts, "spanish": answer.texts, "terms": answer.terms}
-        return {"source": page.texts, "failed": True, "error": error, "terms": terms}
+        error = "".join(traceback.format_exception(last))
+        # What its Error Report will say, redacted now; a page that failed on a 503 or a refused key gets none.
+        report = asdict(reports.describe(last)) if reports.is_bug(last) else None
+        return {"source": page.texts, "failed": True, "error": error, "report": report, "terms": terms}
+
+    def _report(
+        self, problem: str, details: reports.ErrorDetails, source: Sequence[SourcePage], failed: Sequence[int]
+    ) -> str:
+        """Files an Error Report about this Job; returns what she is told about it."""
+        with_text = sum(1 for page in source if page.texts)
+        if not source:
+            kind = "unknown"
+        elif with_text == len(source):
+            kind = "born-digital"
+        else:
+            kind = "mixed" if with_text else "scanned"
+        sent = self._reporter.report(problem, details, Context("Reading Version", kind, len(source), list(failed)))
+        return reports.SENT if sent else reports.QUEUED
 
     def open_folder(self, job_id: str) -> bool:
         """Shows a finished Job's results folder; False when there is no such folder yet."""

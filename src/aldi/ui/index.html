@@ -19,6 +19,7 @@
   .state { color: #555; }
   .done .state { color: #2d7a3a; }
   .failed .state { color: #a33; }
+  .notice { font-size: .9rem; color: #555; margin-top: .2rem; }
   .folder { font-size: .85rem; color: #666; word-break: break-all; margin: .3rem 0 .5rem; }
   button.secondary { background: #fff; color: #2a6f97; padding: .3rem .8rem; }
   header { display: flex; justify-content: space-between; align-items: baseline; }
@@ -139,8 +140,15 @@ async function refresh() {
       name.textContent = job.name;
       const state = document.createElement("div");
       state.className = "state";
-      state.textContent = describe(job);
+      // An Error Report's line already starts with "Algo salió mal.", so it replaces that state rather than repeat it.
+      state.textContent = job.state === "failed" && job.notice ? job.notice : describe(job);
       item.append(name, state);
+      if (job.notice && job.state !== "failed") {
+        const notice = document.createElement("div");
+        notice.className = "notice";
+        notice.textContent = job.notice;
+        item.append(notice);
+      }
       if (job.state === "done") {
         const folder = document.createElement("div");
         folder.className = "folder";
