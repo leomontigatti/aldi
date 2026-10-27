@@ -14,6 +14,7 @@ from typing import TypeVar
 from aldi import reports
 from aldi.blocks import Block
 from aldi.files import write_atomically
+from aldi.layout import Cancelled, write_layout_kept
 from aldi.page_range import format_page_range, parse_page_range
 from aldi.reading import PAGE_BATCH, read_page_batch, translate_page
 from aldi.reports import Context, Reporter
@@ -320,9 +321,6 @@ class JobStore:
     def _layout_kept(self, job_id: str, folder: Path, pages: Sequence[int]) -> Path:
         """The Layout-kept Translation's PDF. BabelDOC lays out every page before it asks Gemini anything, so the
         progress moves only when it is done."""
-        # Imported here: BabelDOC and its layout model weigh on the app's start, and most Jobs never need them.
-        from aldi.layout import Cancelled, write_layout_kept
-
         self._update(job_id, state="running", pages=len(pages))
         (folder / "layout").mkdir(exist_ok=True)
         try:

@@ -1,31 +1,37 @@
 """The Layout-kept Translation: BabelDOC, `pdf2zh-next`'s engine, writes the Spanish over the original pages.
 
-BabelDOC runs in this process with a translator of ours in place of `pdf2zh-next`'s engines, so its requests go
-through `Translator.answer_layout_prompt` like every other Gemini request of the app.
+BabelDOC runs in a child process (`aldi.layout_child`) with a translator of ours in place of `pdf2zh-next`'s
+engines: it sends each prompt here, where `Translator.answer_layout_prompt` answers it like every other Gemini
+request of the app. The child exits after each run, and the memory BabelDOC keeps goes with it.
 """
 
-import asyncio
 import hashlib
 import json
+import multiprocessing
 import threading
 from collections.abc import Callable, Sequence
 from pathlib import Path
 
-from babeldoc.assets.assets import warmup
-from babeldoc.format.pdf import high_level
-from babeldoc.format.pdf.translation_config import TranslationConfig, WatermarkOutputMode
-from babeldoc.progress_monitor import ProgressMonitor
-from babeldoc.translator.translator import BaseTranslator
+# How often the app looks at whether it is closing while BabelDOC works, in seconds.
+_POLL = 0.1
+# How long a child that said it is done gets to exit before it is ended.
+_EXIT = 30
 
 
 def fetch_assets() -> None:
     """Downloads what BabelDOC needs to run, about 345 MB (fonts, its layout model, tiktoken's encoding), into
     `~/.cache/babeldoc`; files already there and intact are kept. `aldi setup` runs it, so a Job never waits on it."""
+    from babeldoc.assets.assets import warmup
+
     warmup()
 
 
 class Cancelled(Exception):
     """The app is closing: the Layout-kept Translation stops, its answers kept for the next run."""
+
+
+class LayoutFailed(RuntimeError):
+    """BabelDOC failed, or its process ended without a result."""
 
 
 def write_layout_kept(
@@ -39,51 +45,50 @@ def write_layout_kept(
 
     Each of Gemini's answers is kept in `folder` as it arrives, so a run stopped by a Quota Pause, a lost connection
     or the app closing asks for none of them again. Raises what `answer` raised, the first time it raised, rather
-    than write a PDF with paragraphs left in English; raises `Cancelled` when the app closed, even while BabelDOC
-    was still laying the pages out.
+    than write a PDF with paragraphs left in English; `Cancelled` as soon as `closing` holds, even while BabelDOC is
+    still laying the pages out; `LayoutFailed` when BabelDOC fails.
     """
-    translator = _Translator(_KeptAnswers(folder / "answers.jsonl", answer), closing)
-    config = TranslationConfig(
-        translator=translator,
-        input_file=source,
-        lang_in="en",
-        lang_out="es",
-        doc_layout_model=None,
-        pages=",".join(str(number) for number in pages),
-        output_dir=folder,
-        working_dir=folder / "work",
-        no_dual=True,
-        watermark_output_mode=WatermarkOutputMode.NoWatermark,
-        only_include_translated_page=True,
-        auto_extract_glossary=False,
-        primary_font_family="serif",
-        # Aldi offers this mode only for pages with a text layer; BabelDOC's own guess refuses pages with little text.
-        skip_scanned_detection=True,
-        # One request at a time: flash's free tier takes 5 a minute (ADR 1).
-        qps=1,
-        pool_max_workers=1,
-        use_rich_pbar=False,
-    )
-    # BabelDOC's own `translate`, with a monitor whose cancel is the app closing: BabelDOC checks it between pages.
-    stages = high_level.get_translation_stage(config)
-    with ProgressMonitor(stages, finish_callback=lambda **_: None, cancel_event=_ClosingEvent(closing)) as monitor:
-        try:
-            result = high_level.do_translate(monitor, config)
-        except asyncio.CancelledError as cancelled:
-            raise Cancelled from cancelled
-    if translator.stopped:
-        raise translator.stopped
-    return Path(result.mono_pdf_path)
+    kept = _KeptAnswers(folder / "answers.jsonl", answer)
+    # `spawn`, as on Windows and macOS: a fresh interpreter, not a copy of the app's threads and memory.
+    context = multiprocessing.get_context("spawn")
+    ours, theirs = context.Pipe()
+    child = context.Process(target=_run_child, args=(source, list(pages), folder, theirs), name="aldi-babeldoc")
+    child.start()
+    theirs.close()
+    done = False
+    try:
+        while True:
+            if closing():
+                raise Cancelled
+            if not ours.poll(_POLL):
+                if not child.is_alive() and not ours.poll():
+                    raise LayoutFailed(f"BabelDOC's process ended with code {child.exitcode}")
+                continue
+            try:
+                kind, value = ours.recv()
+            except EOFError as error:
+                raise LayoutFailed(f"BabelDOC's process ended with code {child.exitcode}") from error
+            if kind == "prompt":
+                ours.send(("answer", kept(value)))
+            elif kind == "done":
+                done = True
+                return Path(value)
+            else:
+                raise LayoutFailed(f"BabelDOC failed in its process:\n{value}")
+    finally:
+        if done:
+            child.join(_EXIT)
+        if child.is_alive():
+            child.kill()
+        child.join()
+        ours.close()
 
 
-class _ClosingEvent:
-    """BabelDOC's cancel event, set when the app closes. BabelDOC sets it itself when it finishes: that is ignored."""
+def _run_child(*args) -> None:
+    # Imported in the child only: the app's own process never loads BabelDOC.
+    from aldi import layout_child
 
-    def __init__(self, closing: Callable[[], bool]):
-        self.is_set = closing
-
-    def set(self) -> None:
-        pass
+    layout_child.run(*args)
 
 
 class _KeptAnswers:
@@ -114,34 +119,3 @@ class _KeptAnswers:
             with self._path.open("a", encoding="utf-8") as kept:
                 kept.write(json.dumps({"prompt": key, "answer": answer}, ensure_ascii=False) + "\n")
         return answer
-
-
-class _Translator(BaseTranslator):
-    """BabelDOC's translator, answering its prompts through Aldi's. Any error, the app closing included, stops every
-    request after it: BabelDOC would otherwise leave those paragraphs in English and carry on."""
-
-    # BabelDOC's own cache keys on this name; `_KeptAnswers` is the cache that counts.
-    name = "aldi"
-
-    def __init__(self, answer: Callable[[str], str], closing: Callable[[], bool]):
-        super().__init__("en", "es", ignore_cache=True)
-        self._answer = answer
-        self._closing = closing
-        self.stopped: Exception | None = None
-
-    def do_llm_translate(self, text, rate_limit_params: dict | None = None):
-        if text is None:
-            # BabelDOC's check that this translator takes whole prompts.
-            return None
-        if not self.stopped and self._closing():
-            self.stopped = Cancelled()
-        if self.stopped:
-            raise self.stopped
-        try:
-            return self._answer(text)
-        except Exception as error:
-            self.stopped = error
-            raise
-
-    def do_translate(self, text, rate_limit_params: dict | None = None):
-        raise NotImplementedError

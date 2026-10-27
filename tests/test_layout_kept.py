@@ -1,5 +1,6 @@
 """Mantener el diseño: the Spanish written over the original pages by `pdf2zh-next`, for pages with text (#13)."""
 
+import sys
 import time
 
 import pymupdf
@@ -62,6 +63,8 @@ def test_mantener_el_diseno_writes_only_the_chosen_pages_in_spanish(app, transla
     assert "ES: Page 3 describes the enamel" in texts[1]
     assert not any("Page 2" in text for text in texts)
     assert translator.layout_prompts
+    # Bug: BabelDOC ran in the app's own process and kept 1-2 GB there after every run.
+    assert not [name for name in sys.modules if name.startswith("babeldoc")]
 
 
 def test_a_quota_pause_in_mantener_el_diseno_waits_and_then_finishes(app, translator, clock, documents_dir, tmp_path):
