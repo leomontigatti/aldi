@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aldi</title>
+<style>
+  :root { font-family: system-ui, sans-serif; color: #222; background: #f6f5f2; }
+  body { max-width: 44rem; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-weight: 600; margin-bottom: .25rem; }
+  p.lead { margin-top: 0; color: #555; }
+  #drop { border: 2px dashed #9a9a9a; border-radius: 12px; padding: 2.5rem 1rem; text-align: center; background: #fff; }
+  #drop.over { border-color: #2a6f97; background: #eef6fb; }
+  button { font: inherit; padding: .5rem 1.1rem; border-radius: 8px; border: 1px solid #2a6f97; background: #2a6f97; color: #fff; cursor: pointer; }
+  #message { color: #a33; min-height: 1.5em; }
+  ul { list-style: none; padding: 0; }
+  li { background: #fff; border-radius: 10px; padding: .8rem 1rem; margin-bottom: .6rem; }
+  .name { font-weight: 600; }
+  .state { color: #555; }
+  .done .state { color: #2d7a3a; }
+  .failed .state { color: #a33; }
+  .notice { font-size: .9rem; color: #555; margin-top: .2rem; }
+  .folder { font-size: .85rem; color: #666; word-break: break-all; margin: .3rem 0 .5rem; }
+  button.secondary { background: #fff; color: #2a6f97; padding: .3rem .8rem; }
+  header { display: flex; justify-content: space-between; align-items: baseline; }
+  button.link { background: none; border: none; color: #2a6f97; padding: 0; text-decoration: underline; }
+  #key-screen ol { padding-left: 1.4rem; }
+  #key-screen ol li { list-style: decimal; background: none; padding: 0; margin-bottom: .5rem; }
+  #key-form { display: flex; gap: .5rem; flex-wrap: wrap; }
+  #key { flex: 1; min-width: 16rem; font: inherit; padding: .5rem; border: 1px solid #9a9a9a; border-radius: 8px; }
+  #key-message { color: #a33; min-height: 1.5em; }
+  #key-message.ok { color: #2d7a3a; }
+  #chooser { background: #fff; border-radius: 12px; padding: 1rem 1.2rem; }
+  #chooser label { display: block; margin: .8rem 0 .3rem; }
+  #page-range { width: 100%; box-sizing: border-box; font: inherit; padding: .5rem; border: 1px solid #9a9a9a; border-radius: 8px; }
+  #output-mode { border: none; padding: 0; margin: .8rem 0 0; }
+  #output-mode legend { padding: 0; margin-bottom: .3rem; }
+  #output-mode label { display: inline; margin: 0 1.2rem 0 .3rem; }
+  #estimate { color: #555; min-height: 1.5em; }
+  #range-message { color: #a33; min-height: 1.5em; }
+  #update { background: #eef6fb; border-radius: 10px; padding: .6rem 1rem; margin-bottom: 1rem; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Aldi</h1>
+  <button type="button" class="link" id="open-settings" hidden>Ajustes</button>
+</header>
+<p class="lead">Traduce al español un PDF en inglés o portugués.</p>
+<div id="update" hidden>
+  <span id="update-offer">Hay una versión nueva — <button type="button" class="link" id="update-button">Actualizar</button></span>
+  <div id="update-status" class="notice" role="status"></div>
+</div>
+<section id="key-screen" hidden>
+  <h2 id="key-title">Antes de empezar: tu clave de Gemini</h2>
+  <p id="key-intro">Aldi traduce con Gemini, de Google. Para usarlo necesitas una clave gratuita, que se crea una sola vez:</p>
+  <ol>
+    <li>Entra en <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> con tu cuenta de Google.</li>
+    <li>Si te lo pide, acepta las condiciones de uso.</li>
+    <li>Pulsa <strong>Create API key</strong> («Crear clave de API»). Si te pregunta por un proyecto, elige el que te ofrece.</li>
+    <li>Cuando aparezca la clave (empieza con <code>AIza</code>), pulsa el botón de copiar.</li>
+    <li>Vuelve aquí, pégala abajo y pulsa <strong id="save-key-step">Guardar clave</strong>.</li>
+  </ol>
+  <p>Es gratis: no hace falta tarjeta ni suscripción.</p>
+  <form id="key-form">
+    <input id="key" type="password" autocomplete="off" spellcheck="false" placeholder="Pega aquí tu clave" aria-label="Clave de Gemini">
+    <button type="submit" id="save-key">Guardar clave</button>
+  </form>
+  <p id="key-message" role="alert"></p>
+  <button type="button" class="link" id="close-settings" hidden>Volver</button>
+</section>
+<main id="home" hidden>
+<div id="drop">
+  <p>Arrastra un PDF aquí</p>
+  <p>o</p>
+  <button type="button" id="choose">Elegir archivo</button>
+  <input type="file" id="file" accept="application/pdf,.pdf" hidden>
+</div>
+<form id="chooser" hidden>
+  <div class="name" id="chosen-name"></div>
+  <div class="state" id="chosen-pages"></div>
+  <div id="range-field">
+    <label for="page-range">¿Todo el documento o qué páginas?</label>
+    <input id="page-range" autocomplete="off" spellcheck="false" placeholder="Todo el documento, o por ejemplo 130-145 o 3, 7-9">
+  </div>
+  <fieldset id="output-mode" hidden>
+    <legend>¿Cómo la quieres?</legend>
+    <input type="radio" name="output-mode" id="mode-reading" value="reading" checked><label for="mode-reading">Versión de lectura con imágenes</label>
+    <input type="radio" name="output-mode" id="mode-layout" value="layout"><label for="mode-layout">Mantener el diseño</label>
+  </fieldset>
+  <p id="estimate"></p>
+  <p id="range-message" role="alert"></p>
+  <button type="submit">Traducir</button>
+  <button type="button" class="secondary" id="cancel">Cancelar</button>
+</form>
+<p id="message" role="alert"></p>
+<h2>Traducciones</h2>
+<ul id="jobs"></ul>
+</main>
+<script>
+const drop = document.getElementById("drop");
+const file = document.getElementById("file");
+const message = document.getElementById("message");
+const list = document.getElementById("jobs");
+
+document.getElementById("choose").addEventListener("click", () => file.click());
+file.addEventListener("change", () => { if (file.files[0]) send(file.files[0]); file.value = ""; });
+drop.addEventListener("dragover", (event) => { event.preventDefault(); drop.classList.add("over"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", (event) => {
+  event.preventDefault();
+  drop.classList.remove("over");
+  if (event.dataTransfer.files[0]) send(event.dataTransfer.files[0]);
+});
+
+const chooser = document.getElementById("chooser");
+const pageRange = document.getElementById("page-range");
+const estimateLine = document.getElementById("estimate");
+const rangeMessage = document.getElementById("range-message");
+const outputMode = document.getElementById("output-mode");
+const modeLayout = document.getElementById("mode-layout");
+let dropped = null;
+let estimating = null;
+// The chosen pages' Estimate in each Output Mode; `layout` is null when Mantener el diseño is not offered.
+let estimates = { reading: "", layout: null };
+
+function showEstimates(body) {
+  estimates = { reading: body.estimate, layout: body.layout_estimate };
+  // Offered only when every chosen page has text; the Reading Version is chosen again when it is not.
+  outputMode.hidden = estimates.layout === null;
+  if (outputMode.hidden) document.getElementById("mode-reading").checked = true;
+  estimateLine.textContent = modeLayout.checked ? estimates.layout : estimates.reading;
+}
+outputMode.addEventListener("change", () => showEstimates({ estimate: estimates.reading, layout_estimate: estimates.layout }));
+
+async function send(pdf) {
+  message.textContent = "";
+  try {
+    const response = await fetch("/api/documents", {
+      method: "POST",
+      headers: { "X-Filename": encodeURIComponent(pdf.name) },
+      body: pdf,
+    });
+    if (response.ok) choose(await response.json());
+    else message.textContent = (await response.json()).error;
+  } catch {
+    message.textContent = "No se pudo enviar el archivo.";
+  }
+}
+
+function choose(document_) {
+  dropped = document_;
+  document.getElementById("chosen-name").textContent = document_.name;
+  document.getElementById("chosen-pages").textContent =
+    document_.pages === 1 ? "Tiene 1 página." : `Tiene ${document_.pages} páginas.`;
+  document.getElementById("range-field").hidden = document_.pages === 1;
+  pageRange.value = "";
+  document.getElementById("mode-reading").checked = true;
+  showEstimates(document_);
+  rangeMessage.textContent = "";
+  drop.hidden = true;
+  chooser.hidden = false;
+  if (document_.pages > 1) pageRange.focus();
+}
+
+function closeChooser() {
+  dropped = null;
+  chooser.hidden = true;
+  drop.hidden = false;
+}
+
+pageRange.addEventListener("input", () => {
+  clearTimeout(estimating);
+  estimating = setTimeout(async () => {
+    const asked = pageRange.value;
+    try {
+      const response = await fetch(`/api/documents/${dropped.id}/estimate?pages=${encodeURIComponent(asked)}`);
+      const body = await response.json();
+      if (pageRange.value !== asked) return;
+      if (response.ok) showEstimates(body);
+      else estimateLine.textContent = "";
+      rangeMessage.textContent = response.ok ? "" : body.error;
+    } catch {
+      // Starting checks the pages again.
+    }
+  }, 300);
+});
+
+document.getElementById("cancel").addEventListener("click", closeChooser);
+chooser.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  clearTimeout(estimating);
+  try {
+    const response = await fetch("/api/jobs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        document: dropped.id,
+        pages: pageRange.value,
+        output_mode: !outputMode.hidden && modeLayout.checked ? "layout" : "reading",
+      }),
+    });
+    if (response.ok) closeChooser();
+    else if (response.status === 400) rangeMessage.textContent = (await response.json()).error;
+    else {
+      message.textContent = (await response.json()).error;
+      closeChooser();
+    }
+  } catch {
+    rangeMessage.textContent = "No se pudo empezar la traducción. Inténtalo de nuevo.";
+  }
+  refresh();
+});
+
+async function retry(id) {
+  message.textContent = "";
+  try {
+    const response = await fetch(`/api/jobs/${id}/retry`, { method: "POST" });
+    if (!response.ok) message.textContent = (await response.json()).error;
+  } catch {
+    message.textContent = "No se pudo volver a intentar.";
+  }
+  refresh();
+}
+
+async function cancelJob(id) {
+  message.textContent = "";
+  try {
+    const response = await fetch(`/api/jobs/${id}/cancel`, { method: "POST" });
+    if (!response.ok) message.textContent = (await response.json()).error;
+  } catch {
+    message.textContent = "No se pudo cancelar la traducción.";
+  }
+  refresh();
+}
+
+async function openFolder(id) {
+  message.textContent = "";
+  try {
+    const response = await fetch(`/api/jobs/${id}/open-folder`, { method: "POST" });
+    if (!response.ok) message.textContent = (await response.json()).error;
+  } catch {
+    message.textContent = "No se pudo abrir la carpeta.";
+  }
+}
+
+function describe(job) {
+  // The page in hand, not the pages finished: the first one reads "Página 1". Mantener el diseño lays out every
+  // page before it asks Gemini anything, so it has no page in hand to name.
+  const progress = job.pages && job.output_mode !== "layout" ? ` Página ${Math.min(job.page + 1, job.pages)} de ${job.pages}` : "";
+  if (job.state === "queued") return "En espera";
+  if (job.state === "running") return `Traduciendo…${progress}`;
+  if (job.state === "paused") return `${job.notice}.${progress}`;
+  if (job.state === "done" && job.failed_pages.length === 1) return "Lista, salvo 1 página que no se pudo traducir";
+  if (job.state === "done" && job.failed_pages.length) return `Lista, salvo ${job.failed_pages.length} páginas que no se pudieron traducir`;
+  if (job.state === "done") return "Lista";
+  return "Algo salió mal.";
+}
+
+async function refresh() {
+  try {
+    const { jobs } = await (await fetch("/api/jobs")).json();
+    list.replaceChildren(...jobs.slice().reverse().map((job) => {
+      const item = document.createElement("li");
+      item.className = job.state;
+      const name = document.createElement("div");
+      name.className = "name";
+      name.textContent = job.page_range ? `${job.name} (páginas ${job.page_range})` : job.name;
+      const state = document.createElement("div");
+      state.className = "state";
+      // An Error Report's line already starts with "Algo salió mal.", so it replaces that state rather than repeat it.
+      state.textContent = job.state === "failed" && job.notice ? job.notice : describe(job);
+      item.append(name, state);
+      // A paused Job's notice is its state line already.
+      if (job.notice && job.state !== "failed" && job.state !== "paused") {
+        const notice = document.createElement("div");
+        notice.className = "notice";
+        notice.textContent = job.notice;
+        item.append(notice);
+      }
+      if (["queued", "running", "paused"].includes(job.state)) {
+        const cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.className = "secondary";
+        cancel.textContent = "Cancelar";
+        cancel.addEventListener("click", () => cancelJob(job.id));
+        item.append(cancel);
+      }
+      if (job.state === "done") {
+        const folder = document.createElement("div");
+        folder.className = "folder";
+        folder.textContent = `${job.results.join(" y ")} en ${job.folder}`;
+        const open = document.createElement("button");
+        open.type = "button";
+        open.className = "secondary";
+        open.textContent = "Abrir carpeta";
+        open.addEventListener("click", () => openFolder(job.id));
+        item.append(folder, open);
+        if (job.failed_pages.length) {
+          const again = document.createElement("button");
+          again.type = "button";
+          again.className = "secondary";
+          again.textContent = "Reintentar páginas fallidas";
+          again.addEventListener("click", () => retry(job.id));
+          item.append(" ", again);
+        }
+      }
+      return item;
+    }));
+  } catch {
+    // The next poll tries again.
+  }
+}
+
+const home = document.getElementById("home");
+const keyScreen = document.getElementById("key-screen");
+const keyInput = document.getElementById("key");
+const keyMessage = document.getElementById("key-message");
+const openSettings = document.getElementById("open-settings");
+const closeSettings = document.getElementById("close-settings");
+
+function show(screen, hasKey) {
+  home.hidden = screen !== "home";
+  keyScreen.hidden = screen !== "key";
+  openSettings.hidden = screen !== "home";
+  closeSettings.hidden = !hasKey;
+  document.getElementById("key-title").textContent = hasKey ? "Ajustes: tu clave de Gemini" : "Antes de empezar: tu clave de Gemini";
+  document.getElementById("key-intro").textContent = hasKey
+    ? "Tu clave ya está guardada. Para cambiarla por otra, crea una nueva así:"
+    : "Aldi traduce con Gemini, de Google. Para usarlo necesitas una clave gratuita, que se crea una sola vez:";
+  const saveLabel = hasKey ? "Cambiar clave" : "Guardar clave";
+  document.getElementById("save-key").textContent = saveLabel;
+  document.getElementById("save-key-step").textContent = saveLabel;
+  keyInput.value = "";
+  keyMessage.textContent = "";
+  keyMessage.className = "";
+}
+
+openSettings.addEventListener("click", () => show("key", true));
+closeSettings.addEventListener("click", () => show("home", true));
+document.getElementById("key-form").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const button = document.getElementById("save-key");
+  button.disabled = true;
+  keyMessage.className = "";
+  keyMessage.textContent = "Comprobando la clave…";
+  try {
+    const response = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ key: keyInput.value }),
+    });
+    if (response.ok) {
+      show("home", true);
+      message.textContent = "";
+    } else {
+      keyMessage.textContent = (await response.json()).error;
+    }
+  } catch {
+    keyMessage.textContent = "No se pudo comprobar la clave. Inténtalo de nuevo.";
+  }
+  button.disabled = false;
+});
+
+const update = document.getElementById("update");
+const updateOffer = document.getElementById("update-offer");
+const updateStatus = document.getElementById("update-status");
+
+async function checkUpdate() {
+  try {
+    const { available, notice } = await (await fetch("/api/update")).json();
+    updateOffer.hidden = !available;
+    updateStatus.textContent = notice;
+    update.hidden = !available && !notice;
+  } catch {
+    // Without an answer she keeps this version; the next launch asks again.
+  }
+}
+
+document.getElementById("update-button").addEventListener("click", async () => {
+  updateOffer.hidden = true;
+  updateStatus.textContent = "Preparando la actualización… Puede tardar unos minutos.";
+  try {
+    const response = await fetch("/api/update", { method: "POST" });
+    if (response.ok) {
+      updateStatus.textContent = "Aldi se cierra para actualizarse y se abrirá de nuevo en un momento.";
+      return;
+    }
+    updateStatus.textContent = (await response.json()).error;
+  } catch {
+    updateStatus.textContent = "No se pudo actualizar Aldi.";
+  }
+  updateOffer.hidden = false;
+});
+
+async function start() {
+  try {
+    const { has_key } = await (await fetch("/api/settings")).json();
+    show(has_key ? "home" : "key", has_key);
+  } catch {
+    setTimeout(start, 1000);
+    return;
+  }
+  refresh();
+  setInterval(refresh, 1000);
+  checkUpdate();
+}
+
+start();
+</script>
+</body>
+</html>

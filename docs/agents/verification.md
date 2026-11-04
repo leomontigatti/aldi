@@ -1,18 +1,22 @@
 # Verification
 
-How to prove a change she would see: the app window, a **Job**'s progress, the PDF and DOCX it writes. The app
-does not exist yet; the ticket that adds its window adds the `dev` recipe and fills § Launch and § Feature map.
+How to prove a change she would see: the app window, a **Job**'s progress, the PDF and DOCX it writes.
 
 ## Launch
 
-`uv run just dev` (added with the app window) starts the app from this worktree on a free `localhost` port,
-without pywebview's native window, and prints the URL. It reads the key from `.env`. The output of every **Job**
-goes under this worktree's git-ignored `jobs/`.
+`uv run just dev` starts the app from this worktree on a free `127.0.0.1` port, without the native window, and
+prints the URL (`Aldi: http://127.0.0.1:<port>/`). Everything it writes goes under this worktree's git-ignored
+`jobs/`: each **Job**'s folder in `jobs/jobs/`, the results that would land in her Documents folder in
+`jobs/Documentos/Aldi/<nombre>/`, and the settings that would land in her user config directory in
+`jobs/config/settings.json`. While that file holds no key, it uses the one in `.env`; with neither, it opens on the
+key setup screen.
 
 ## Doctor
 
-- Read the app's log in the terminal `dev` runs in; the **Job** folder under `jobs/` holds each page's Gemini
-  response, so a bad page is diagnosed from what Gemini returned, not from guesses.
+- Read the app's log in the terminal `dev` runs in. A **Job**'s folder under `jobs/jobs/<id>/` holds
+  `job.json`, each page's text and Gemini answer in `pages/`, the Markdown and Typst the results were made from,
+  the last error of each **Failed Page** in its `pages/NNNN.json`, and `error.txt` when the **Job** failed, so a
+  bad page is diagnosed from what Gemini returned, not from guesses.
 - A `429` is quota, not a bug: the **Model Chain** moves on, then a **Quota Pause**. A `503` is Gemini
   overloaded; it retries.
 
@@ -47,4 +51,10 @@ Which flow proves which area. Filled in as each area lands.
 
 | Area | Flow |
 | ---- | ---- |
-| (none yet) | |
+| Reading Version of a **Born-digital PDF** | Drop the PDF (or `Elegir archivo`), then `Traducir`; the list shows `Traduciendo… Página N de M`, then `Lista` with the results' folder. Open the PDF and DOCX there: Spanish text, one column, left-aligned, a `p. N del original` at each original page; the original's images near their text with the Spanish caption under them, its tables as tables, its bold and italics, its references untranslated, no running headers or page numbers (`uv run just test-pdf` builds such an article). |
+| Key setup and settings | With no key in `jobs/config/settings.json` nor in `.env`, the app opens on the setup screen's steps. A wrong key shows `Esa clave no funciona…` under the field; a valid one opens the drop zone. `Ajustes` opens the same form to change it, and `Volver` goes back. |
+| Install line, launcher and window | On a Windows (or macOS) machine, by hand: run the README's install line, which asks for the reporting token and ends with `Aldi quedó instalado.`; the `Aldi` shortcut on the desktop and in the Start menu (`Aldi.app` in Applications) opens the app in its own window, not a browser tab; closing the window ends the `pythonw` (`python`) process. Before the first **Release** the line has nothing to install: CI's `install` job is the check. |
+| Page Range, estimate and progress | Drop a PDF of several pages: it does not start, but asks `¿Todo el documento o qué páginas?` with `Tiene N páginas.` and a `Tiempo estimado: …` in minutes or hours. Typing `2-3` updates the estimate; a page past the last, or `abc`, shows the Spanish refusal under the field, and `Traducir` refuses it too. `Traducir` on `2-3` starts a **Job** listed as `<nombre> (páginas 2-3)`, reading `Página 1 de 2`, then `Página 2 de 2`; its PDF has only `p. 2 del original` and `p. 3 del original`. `Cancelar` goes back to the drop zone and starts nothing. |
+| Update from a **Release** | On an installed Aldi only (`dev` never asks): with a newer **Release** out than the installed version, the window opens with `Hay una versión nueva — Actualizar`; `Actualizar` shows `Preparando la actualización…`, then the window closes and Aldi opens again at the new version, with its **Jobs**, results and key. Before a second **Release** there is nothing to update to: the tests are the check. |
+| Queue, pauses and `Cancelar` | Start two documents: the second reads `En espera` until the first is `Lista`. While a **Job** is in a **Quota Pause** its line reads `En pausa hasta que Gemini vuelva a estar disponible.` once, and the next **Job** translates meanwhile. Every unfinished **Job** has `Cancelar`: it leaves the list, and its folder under `jobs/jobs/` is gone; a `Lista` one has none, and her results in `jobs/Documentos` stay. |
+| A file that is not a PDF | Drop it; `Este archivo no es un PDF.` appears under the drop zone and no **Job** starts. |

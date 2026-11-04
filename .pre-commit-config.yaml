@@ -31,6 +31,12 @@ repos:
         entry: uv run --locked ruff format
         language: system
         types_or: [python, pyi]
+      - id: install-constraints
+        name: install-constraints.txt matches uv.lock
+        entry: uv run --locked just constraints
+        language: system
+        files: ^(pyproject\.toml|uv\.lock|install-constraints\.txt)$
+        pass_filenames: false
       - id: shellcheck
         name: shellcheck
         entry: uv run --locked shellcheck -x

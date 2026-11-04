@@ -1,6 +1,7 @@
 # Gemini free-tier spike, October 2026
 
-What the spikes of 2026-10-26 and 2026-10-27 measured, on one key's free tier. Cited by
+What the spikes of 2026-10-26 and 2026-10-27 measured, on one key's free tier, and the **Model Chain**'s
+measurements of 2026-10-27 (ticket #7, `uv run just gemini-measure`). Cited by
 [ADR 1](../adr/0001-gemini-free-tier-only.md) and [ADR 3](../adr/0003-reading-version-is-the-default.md). The
 documents were a **Scanned PDF** (a 403-page dentistry book, 120 dpi JPEG pages, no text layer) and two
 **Born-digital PDFs** (journal articles in two columns, one with a flowchart).
@@ -13,11 +14,27 @@ Read from the `429` error bodies, which name the quota (`GenerateRequestsPerMinu
 | --- | --- | --- |
 | `gemini-3.5-flash-lite` (`gemini-flash-lite-latest`) | 15 | Steady |
 | `gemini-3.8-flash` | 5 | Often `503` (overloaded) |
+| `gemini-3.5-flash` | 5 | Served as `gemini-3.6-flash`: the `429` names that model. `503` twice in a day |
 
 Limits are per project and per model, so moving to the next model in the **Model Chain** gets fresh quota on the
-same key. The daily limit is not reported until it is hit; `gemini-3.5-flash`'s limits were not measured.
+same key. The daily limit is not reported until it is hit, and was not hit.
+
+A `429` carries a `RetryInfo` with how long to wait (`"retryDelay": "1s"` when the minute was almost over). The
+**Translator** skips a model for that long and goes back to it after, so a minute's limit on flash does not move
+the rest of a book to flash-lite.
 
 ## Speed
+
+A page of text from a **Born-digital PDF** (about 450 words in six blocks), through the **Translator**:
+
+| Model | Seconds a page |
+| --- | --- |
+| `gemini-3.5-flash` | 11.6 and 28.8 (two runs) |
+| `gemini-3.5-flash-lite` | 6.3 |
+| `gemma-4-26b-a4b-it` | 84 to 144 |
+
+At flash's 5 requests a minute, a fast run of short pages reaches the limit and the next page goes to flash-lite
+for the rest of that minute.
 
 flash-lite took 5 to 16 s per scanned page, one page a request. Four-page **Page Batches** cut the requests to
 a quarter; their time per page was not measured carefully.
@@ -48,3 +65,17 @@ a quarter; their time per page was not measured carefully.
 - `pdf2zh-next` 2.9.0 fails to import with `bitstring` 5 (`BitStream`); pin `bitstring<4.4`.
 - Markdown to PDF through the `typst` package and to DOCX through `pypandoc-binary` both work from one Markdown,
   with wheels for Windows and macOS. `#set par(justify: false)` gives left-aligned text.
+
+## Gemma, the end of the Model Chain
+
+The key reaches two Gemma models, `gemma-4-26b-a4b-it` and `gemma-4-31b-it`. Measured with the **Translator**'s
+own request (`uv run just gemini-measure variants <model>`):
+
+- `gemma-4-31b-it` answered `500 INTERNAL` to every variant: with the system instruction or without, with a
+  response schema or without.
+- `gemma-4-26b-a4b-it` answered `500` or hung (one request ran over 15 minutes, another timed out at 3) when the
+  request carried a response schema. With the system instruction and JSON output but no schema it translated the
+  page well, in 84 to 144 s, but shaped the Term List its own way until the instruction spelled out the JSON.
+
+So the chain ends in `gemma-4-26b-a4b-it`, asked without a schema and told the answer's shape in the instruction.
+At over a minute a page it is a last resort before a **Quota Pause**, not a model to translate a book with.

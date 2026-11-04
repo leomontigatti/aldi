@@ -61,5 +61,51 @@ jobs:
           version: "0.13.0"
           enable-cache: false
       - run: uv sync --locked --no-default-groups --group test
+      # Mantener el diseño's tests run BabelDOC, which needs ~345 MB of fonts and models that `aldi setup` downloads
+      # on her laptop. Kept between runs while uv.lock keeps the same BabelDOC.
+      - name: BabelDOC's version
+        id: babeldoc
+        run: echo "version=$(uv run --locked python -c 'import importlib.metadata as m; print(m.version("BabelDOC"))')" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cache/babeldoc
+          key: babeldoc-${{ runner.os }}-${{ steps.babeldoc.outputs.version }}
+      - name: BabelDOC's assets
+        run: uv run --locked just layout-assets
       - name: Tests
         run: uv run --locked just test
+
+  # The install line on a runner with no uv, from this checkout instead of a Release (install.ps1, install.sh).
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2025, macos-15]
+    runs-on: ${{ matrix.os }}
+    env:
+      ALDI_SOURCE: ${{ github.workspace }}
+      ALDI_REPORT_TOKEN: not-a-token
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Windows PowerShell 5.1, as on her laptop, running the script the way `irm | iex` does.
+      - name: Install (Windows)
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: Get-Content -Raw -Encoding UTF8 install.ps1 | Invoke-Expression
+      - name: Install (macOS)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: sh < install.sh
+      - name: The launcher, the token and the app are there
+        shell: bash
+        run: |
+          if [[ $RUNNER_OS == Windows ]]; then
+            test -f "$APPDATA/Microsoft/Windows/Start Menu/Programs/Aldi.lnk"
+            test -f "$LOCALAPPDATA/Aldi/settings.json"
+          else
+            test -x /Applications/Aldi.app/Contents/MacOS/Aldi || test -x "$HOME/Applications/Aldi.app/Contents/MacOS/Aldi"
+            test -f "$HOME/Library/Application Support/Aldi/settings.json"
+          fi
+          "$HOME/.local/bin/aldi" --help
