@@ -51,6 +51,10 @@ Where this code is likely to be hurt, for the correctness brief:
   renamed, paths longer than 260 characters, and text written without `encoding="utf-8"`.
 - A Spanish accent or `ñ` lost in a font, in the PDF or the DOCX.
 - The quota itself: a loop that retries without backing off burns the day's limit in a minute.
+- Races: there is one user on her own laptop, so a race can only come from the app's own concurrency, and on
+  2026-11-04 there is none, since there is no code yet; name each source here as it lands (parallel Gemini
+  batches, a worker beside the UI, the queued error reports sent in the background, a second instance on the
+  same output).
 
 ## Breadth
 
