@@ -10,6 +10,11 @@ permissions:
 
 jobs:
   title:
+    # Body edits skip the job: a skipped job reports a success under its name, so the
+    # skipped run takes another name and `title` keeps the verdict of the last run that
+    # read the title. A base change (a stacked PR retargeted) still runs it.
+    name: ${{ github.event.action == 'edited' && github.event.changes.title == null && github.event.changes.base == null && 'title (title unchanged)' || 'title' }}
+    if: github.event.action != 'edited' || github.event.changes.title != null || github.event.changes.base != null
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
